@@ -845,6 +845,14 @@ export class GpuPetitGPT {
       const scChunks = [];
       const offsets = [];
       const pushMat = (name) => {
+        const t = this.bundle.tensors[name];
+        if (t && t.storage === "f16") {
+          const u32 = packU16ToU32(u16View(this.bundle, name));
+          offsets.push(packU32, scF);
+          packChunks.push(u32);
+          packU32 += u32.length;
+          return;
+        }
         const packed = u8View(this.bundle, name);
         const scales = scaleView(this.bundle, name);
         const u32 = packU8ToU32(packed);

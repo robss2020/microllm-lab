@@ -159,7 +159,7 @@
       "maker": "OpenAI (Alec Radford et al.)",
       "year": "2019",
       "story": "GPT-2 124M is OpenAI’s February 2019 language model (Radford et al.), later re-released MIT as openai-community/gpt2. Twelve layers, LayerNorm, GELU, learned absolute positions, 50k BPE — the architecture Andrej Karpathy’s nanoGPT trains. It is a completion model, not chat-tuned. Greedy decode often loops; that is the checkpoint, not a decoder bug.",
-      "q4Bytes": 80854688
+      "q4Bytes": 133926128
     }
   ]
 }

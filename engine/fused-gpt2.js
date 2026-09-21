@@ -118,6 +118,23 @@ fn load_w(packOff: u32, idx: u32) -> f32 {
   let nib = (word >> ((idx % 8u) * 4u)) & 15u;
   return f32(nib) - 8.0;
 }
+fn load_emb_f16(packOff: u32, tok: u32, i: u32) -> f32 {
+  let word = PACK[packOff + (tok * D + i) / 2u];
+  let pair = unpack2x16float(word);
+  return select(pair.x, pair.y, (i & 1u) == 1u);
+}
+fn f16dot_xn(row: u32, cols: u32, packOff: u32) -> f32 {
+  var s = 0.0;
+  let nW = cols / 2u;
+  let base = packOff + row * nW;
+  for (var w = 0u; w < nW; w++) {
+    let word = PACK[base + w];
+    let pair = unpack2x16float(word);
+    let xb = w * 2u;
+    s += pair.x * xn[xb] + pair.y * xn[xb + 1u];
+  }
+  return s;
+}
 fn gelu(v: f32) -> f32 {
   let x = clamp(v, -20.0, 20.0);
   let z = clamp(0.7978845834732056 * (x + 0.044715 * x * x * x), -8.0, 8.0);
@@ -143,8 +160,7 @@ fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     let pos = params.pos0 + ti;
     var i = lid;
     while (i < D) {
-      let sc = SC[lmS + tok * ngD + i / 32u];
-      SCR[X_OFF + i] = load_w(lmP, tok * D + i) * sc + SC[wpe + pos * D + i];
+      SCR[X_OFF + i] = load_emb_f16(lmP, tok, i) + SC[wpe + pos * D + i];
       i += WG;
     }
     workgroupBarrier();
@@ -310,7 +326,7 @@ fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
       workgroupBarrier();
       var row = lid;
       while (row < VOCAB) {
-        SCR[LOG_OFF + row] = q4dot_xn(row, D, lmP, lmS);
+        SCR[LOG_OFF + row] = f16dot_xn(row, D, lmP);
         row += WG;
       }
       workgroupBarrier();
