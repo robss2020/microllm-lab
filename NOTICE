@@ -1,0 +1,44 @@
+MicroLLM lab
+============
+
+This repository’s WebGPU harness, Q4 packer, and UI are original work for
+this lab and are licensed under Apache-2.0.
+
+It would not exist without PetitGPT.
+
+  PetitGPT
+  Author: yangqi0
+  https://github.com/yangqi0/petitgpt
+  License: Apache-2.0
+
+  The research-v1 checkpoint, tokenizer, and transformer graph (pre-norm
+  RMSNorm, fused QKV GQA, Llama-style RoPE, SwiGLU, tied embeddings) are
+  the starting point of this port.
+
+Third-party Q4 conversions in models/ (each keeps its upstream license):
+
+  HuggingFaceTB/SmolLM2-135M-Instruct
+  HuggingFaceTB/SmolLM2-360M-Instruct
+  HuggingFaceTB/SmolLM-135M-Instruct
+    https://huggingface.co/HuggingFaceTB
+    License: Apache-2.0
+    Paper: arXiv:2502.02737 (SmolLM2)
+
+  AliceYin/l20-edu-135m
+    https://huggingface.co/AliceYin/l20-edu-135m
+    License: Apache-2.0
+
+  jingyaogong/MiniMind2
+  jingyaogong/MiniMind2-Small
+    https://huggingface.co/jingyaogong/MiniMind2
+    License: Apache-2.0
+
+  openai-community/gpt2
+    https://huggingface.co/openai-community/gpt2
+    License: MIT
+
+UI charting:
+
+  Chart.js v4.4.1 (vendor/chart.umd.min.js)
+    https://www.chartjs.org/
+    License: MIT

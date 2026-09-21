@@ -1,0 +1,25 @@
+{
+  "hf": "AliceYin/l20-edu-135m",
+  "vocabSize": 49152,
+  "nLayers": 30,
+  "dModel": 576,
+  "nHeads": 9,
+  "nKvHeads": 3,
+  "dFf": 1536,
+  "maxSeqLen": 2048,
+  "ropeTheta": 10000.0,
+  "headDim": 64,
+  "params": 134515008,
+  "q4Bytes": 84221440,
+  "bosId": 0,
+  "eosId": 0,
+  "padId": 0,
+  "unkId": 0,
+  "bosToken": "<|endoftext|>",
+  "eosToken": "<|endoftext|>",
+  "chatTemplate": null,
+  "specials": {
+    "<|endoftext|>": 0
+  },
+  "qGroup": 32
+}

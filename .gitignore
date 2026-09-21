@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+bench-out/
+.DS_Store
+weights/*.f32.bin
+weights/*.f16.bin
+weights/*.bf16.bin
+weights/*.q8.bin
+petitgpt-webgpu.zip
+*.zip
+.grok/
+brief.txt
+testantigravity.txt
+MANIFEST.sha256
