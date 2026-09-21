@@ -71,6 +71,22 @@ def add_f32(entries, blobs, name, arr):
     )
 
 
+def add_f16(entries, blobs, name, arr):
+    data = np.ascontiguousarray(arr, np.float16)
+    off = blobs.tell()
+    blobs.write(data.tobytes())
+    entries.append(
+        {
+            "name": name,
+            "shape": list(data.shape),
+            "kind": "q4",
+            "storage": "f16",
+            "offset": off,
+            "nbytes": data.nbytes,
+        }
+    )
+
+
 def conv1d(w):
     # HF Conv1D weight is [in, out]; we want [out, in] row-major GEMV.
     return w.detach().float().cpu().numpy().T
@@ -97,7 +113,8 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
 
     blobs = BytesIO()
     entries = []
-    add_q4(entries, blobs, "lm_head", tr.wte.weight.detach().float().cpu().numpy())
+    # lm_head requires F16 precision to avoid catastrophic logit collapse on 50k vocab
+    add_f16(entries, blobs, "lm_head", tr.wte.weight.detach().float().cpu().numpy())
     add_f32(entries, blobs, "wpe", tr.wpe.weight.detach().float().cpu().numpy()[:n_ctx])
     ln_f = np.concatenate([bias(tr.ln_f.weight), bias(tr.ln_f.bias)])
     add_f32(entries, blobs, "ln_f", ln_f)

@@ -125,7 +125,8 @@ export function dequantizeToF32(bundle, name) {
   throw new Error(t.storage);
 }
 
-export function f16ToF32(h) {
+const _dv = new DataView(new ArrayBuffer(4));
+function _rawF16ToF32(h) {
   const s = (h & 0x8000) << 16;
   let e = (h >> 10) & 0x1f;
   let f = h & 0x3ff;
@@ -146,9 +147,17 @@ export function f16ToF32(h) {
   } else {
     bits = s | ((e + 127 - 15) << 23) | (f << 13);
   }
-  const dv = new DataView(new ArrayBuffer(4));
-  dv.setUint32(0, bits, true);
-  return dv.getFloat32(0, true);
+  _dv.setUint32(0, bits, true);
+  return _dv.getFloat32(0, true);
+}
+
+const F16_LUT = new Float32Array(65536);
+for (let i = 0; i < 65536; i++) {
+  F16_LUT[i] = _rawF16ToF32(i);
+}
+
+export function f16ToF32(h) {
+  return F16_LUT[h & 0xffff];
 }
 
 export function f32ToF16Bits(val) {

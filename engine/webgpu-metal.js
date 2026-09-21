@@ -18,6 +18,7 @@ export const FLAG_SILU = 4;
 export const FLAG_LN = 8;
 export const FLAG_BIAS = 16;
 export const FLAG_GELU = 32;
+export const FLAG_F16 = 64;
 export const CHAIN_TOK = 0xffffffff;
 
 const COMPUTE = GPUShaderStage.COMPUTE;
@@ -60,6 +61,7 @@ const FLAG_SILU: u32 = 4u;
 const FLAG_LN: u32 = 8u;
 const FLAG_BIAS: u32 = 16u;
 const FLAG_GELU: u32 = 32u;
+const FLAG_F16: u32 = 64u;
 const CHAIN: u32 = 0xFFFFFFFFu;
 const ROW_TILE: u32 = ${ROW_TILE}u;
 const K_THREADS: u32 = ${K_THREADS}u;
@@ -110,12 +112,38 @@ fn q4group(row: u32, g: u32, cols: u32, packOff: u32, scaleOff: u32) -> f32 {
   return s * sc;
 }
 fn dot_full(row: u32, cols: u32, packOff: u32, scaleOff: u32) -> f32 {
+  if ((job.flags & FLAG_F16) == FLAG_F16) {
+    var s = 0.0;
+    let nW = cols / 2u;
+    let base = packOff + row * nW;
+    for (var w = 0u; w < nW; w++) {
+      let word = PACK[base + w];
+      let pair = unpack2x16float(word);
+      let xb = w * 2u;
+      s += pair.x * src[xb] + pair.y * src[xb + 1u];
+    }
+    return s;
+  }
   let ng = cols / 32u;
   var acc = 0.0;
   for (var g = 0u; g < ng; g++) { acc += q4group(row, g, cols, packOff, scaleOff); }
   return acc;
 }
 fn dot_slice(row: u32, cols: u32, packOff: u32, scaleOff: u32, kid: u32, stride: u32) -> f32 {
+  if ((job.flags & FLAG_F16) == FLAG_F16) {
+    var s = 0.0;
+    let nW = cols / 2u;
+    let base = packOff + row * nW;
+    var w = kid;
+    while (w < nW) {
+      let word = PACK[base + w];
+      let pair = unpack2x16float(word);
+      let xb = w * 2u;
+      s += pair.x * src[xb] + pair.y * src[xb + 1u];
+      w += stride;
+    }
+    return s;
+  }
   let ng = cols / 32u;
   let rowU = cols / 8u;
   var acc = 0.0;
@@ -459,8 +487,10 @@ fn gpt2(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (i >= D) { return; }
   var tok = step.token;
   if (tok == CHAIN) { tok = OUT[step.slot - 1u]; }
-  ${embedBody(kind)}
-  SCR[X_OFF + i] = SCR[X_OFF + i] + SC[job.normOff + step.pos * D + i];
+  let word = PACK[job.packOff + (tok * D + i) / 2u];
+  let pair = unpack2x16float(word);
+  let emb = select(pair.x, pair.y, (i & 1u) == 1u);
+  SCR[X_OFF + i] = emb + SC[job.normOff + step.pos * D + i];
 }
 `;
 
@@ -849,7 +879,7 @@ export async function initMetal(engine) {
       packOff: lmP,
       scaleOff: lmS,
       dstOff: LOG,
-      flags: FLAG_LN,
+      flags: FLAG_LN | FLAG_F16,
       normOff: lnf,
     });
     engine.layerJobs = [];
