@@ -1,0 +1,27 @@
+{
+  "hf": "jingyaogong/MiniMind2",
+  "vocabSize": 6400,
+  "nLayers": 16,
+  "dModel": 768,
+  "nHeads": 8,
+  "nKvHeads": 2,
+  "dFf": 2048,
+  "maxSeqLen": 2048,
+  "ropeTheta": 1000000.0,
+  "headDim": 96,
+  "params": 104030976,
+  "q4Bytes": 65121632,
+  "bosId": 1,
+  "eosId": 2,
+  "padId": 0,
+  "unkId": 0,
+  "bosToken": "<|im_start|>",
+  "eosToken": "<|im_end|>",
+  "chatTemplate": null,
+  "specials": {
+    "<|im_start|>": 1,
+    "<|im_end|>": 2,
+    "<|endoftext|>": 0
+  },
+  "qGroup": 32
+}

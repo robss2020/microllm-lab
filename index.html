@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MicroLLM lab — tiny LLMs, Q4, in your browser</title>
+    <meta name="theme-color" content="#0a0a0b" />
+    <meta
+      name="description"
+      content="Run Q4 small language models entirely in the browser with WebGPU. Chat, benchmark, and compare PetitGPT, SmolLM2, and friends on-device."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <h1>MicroLLM lab</h1>
+          <p>
+            Small language models, Q4, running on <em>this</em> GPU — no server, no account.
+            WebGPU (Safari / Apple Silicon included). Pick a model at the top, then chat
+            or run the suite — Compare charts speed and accuracy.
+          </p>
+          <p class="hero-links">
+            <a class="btn primary" href="https://stateofutopia.com/experiments/microllmlab">Try it live</a>
+            <a class="btn" href="https://stateofutopia.com/experiments/microllmlab/current.zip">Download zip (591 MB)</a>
+            <a class="btn" href="https://github.com/robss2020/microllm-lab">GitHub</a>
+          </p>
+        </div>
+        <nav class="tabs" role="tablist">
+          <button type="button" data-tab="chat" aria-selected="true">Chat</button>
+          <button type="button" data-tab="bench">Benchmarks</button>
+          <button type="button" data-tab="compare">Compare</button>
+          <button type="button" data-tab="studio">Custom eval</button>
+        </nav>
+      </header>
+
+      <section class="model-bar" aria-label="Model picker">
+        <div class="model-bar-row">
+          <label class="model-select-label" for="active-dtype">Active model</label>
+          <select id="active-dtype"></select>
+          <p class="idb-total" id="idb-total">Stored on this device: …</p>
+          <div class="model-bar-actions">
+            <button type="button" class="btn" id="dl-all">Download all</button>
+            <button type="button" class="btn ghost" id="ds-all">Discard all</button>
+          </div>
+        </div>
+        <div class="model-cards" id="model-cards" role="listbox" aria-label="Available models"></div>
+        <article class="model-story" id="model-story"></article>
+      </section>
+
+      <div class="shell">
+        <main class="main">
+          <div class="progress" aria-hidden="true"><i id="progress"></i></div>
+
+          <section id="panel-chat" class="panel active">
+            <div class="chips" id="prompt-chips"></div>
+            <div class="chat" id="chat"></div>
+            <div class="composer">
+              <textarea id="prompt" rows="3" placeholder="Write a user prompt. Ctrl/Cmd+Enter to send."></textarea>
+              <div class="row">
+                <button class="btn primary" id="send" data-busy>Generate</button>
+                <label>max new <input id="max-new" type="text" value="64" style="width:4.5rem" /></label>
+              </div>
+            </div>
+          </section>
+
+          <section id="panel-bench" class="panel">
+            <p>
+              Objective checks (regex / exact tokens), not writing quality. A 135M model is allowed
+              to fail — that <em>is</em> the measurement. Pick models, then run. Estimate uses your
+              last tok/s if we have one.
+            </p>
+            <p id="bench-estimate" class="muted"></p>
+            <div class="row">
+              <button class="btn primary" id="run-builtin" data-busy>Run suite on active model</button>
+              <button class="btn" id="run-all" data-busy>Run suite on every downloaded model</button>
+            </div>
+            <div class="charts" id="bench-charts" hidden>
+              <div class="chart-card">
+                <h3>Runtime per test (ms)</h3>
+                <div class="chart-frame chart-frame-tall"><canvas id="chart-bench-ms"></canvas></div>
+              </div>
+              <div class="chart-card">
+                <h3>Accuracy per test</h3>
+                <div class="chart-frame chart-frame-tall"><canvas id="chart-bench-acc"></canvas></div>
+              </div>
+            </div>
+            <div id="bench-table"></div>
+          </section>
+
+          <section id="panel-compare" class="panel">
+            <p>
+              Speed (tokens/s, suite wall) and accuracy (pass rate on the objective suite) from runs
+              in this browser. Numbers stay on this machine. Charts use the latest suite per model.
+            </p>
+            <div class="charts" id="compare-charts" hidden>
+              <div class="chart-card">
+                <h3>Accuracy (latest suite)</h3>
+                <div class="chart-frame"><canvas id="chart-acc"></canvas></div>
+              </div>
+              <div class="chart-card">
+                <h3>Speed (mean tok/s)</h3>
+                <div class="chart-frame"><canvas id="chart-speed"></canvas></div>
+              </div>
+              <div class="chart-card">
+                <h3>Suite wall (ms)</h3>
+                <div class="chart-frame"><canvas id="chart-wall"></canvas></div>
+              </div>
+            </div>
+            <div id="compare-table"></div>
+            <div class="row">
+              <button class="btn" id="clear-compare">Clear saved comparison</button>
+            </div>
+          </section>
+
+          <section id="panel-studio" class="panel">
+            <div class="callout">
+              <h3>Write a benchmark in JavaScript</h3>
+              <p>
+                The editor is <code>eval()</code>’d in this origin, then each <code>check</code> runs on the
+                model’s decoded text.
+              </p>
+            </div>
+            <div class="row">
+              <button class="btn" id="load-ex-obj">Example: object</button>
+              <button class="btn" id="load-ex-fn">Example: function</button>
+              <button class="btn primary" id="run-custom" data-busy>Eval and run</button>
+            </div>
+            <p id="custom-error" class="fail"></p>
+            <textarea id="custom-code" class="code" spellcheck="false"></textarea>
+            <div class="callout">
+              <h3>Prompt for a larger LLM</h3>
+              <div class="row"><button class="btn" id="copy-llm">Copy prompt</button></div>
+              <textarea id="llm-prompt" class="code" readonly></textarea>
+            </div>
+            <div class="callout">
+              <h3>Function form</h3>
+              <pre class="log" id="ex-fn"></pre>
+            </div>
+          </section>
+        </main>
+
+        <aside class="hud">
+          <h2>Runtime</h2>
+          <div class="statgrid">
+            <div class="stat"><span>Backend</span><b id="stat-backend">—</b></div>
+            <div class="stat"><span>Model</span><b id="stat-dtype">—</b></div>
+            <div class="stat"><span>tok/s</span><b id="stat-toks">—</b></div>
+            <div class="stat"><span>TTFT</span><b id="stat-ttft">—</b></div>
+            <div class="stat"><span>Wall</span><b id="stat-total">—</b></div>
+            <div class="stat"><span>Stop</span><b id="stat-stop">—</b></div>
+            <div class="stat"><span>JS heap</span><b id="stat-heap">—</b></div>
+            <div class="stat"><span>GPU buffers</span><b id="stat-gpu">—</b></div>
+            <div class="stat"><span>IndexedDB</span><b id="stat-idb">—</b></div>
+          </div>
+          <p class="log" id="gpu-name">Adapter: not queried yet</p>
+          <label class="check" style="margin-top:12px">
+            <input type="checkbox" id="prefer-gpu" checked />
+            <div><label for="prefer-gpu">Prefer WebGPU</label><small>Falls back to WASM, then JS</small></div>
+          </label>
+          <h2 style="margin-top:24px">Log</h2>
+          <pre class="log" id="log"></pre>
+        </aside>
+      </div>
+
+      <footer class="foot">
+        <span>
+          Inspired by <a href="https://github.com/yangqi0/petitgpt">yangqi0/petitgpt</a>
+          · live
+          <a href="https://stateofutopia.com/experiments/microllmlab">stateofutopia.com/experiments/microllmlab</a>
+          ·
+          <a href="https://stateofutopia.com/experiments/microllmlab/current.zip">current.zip (591 MB)</a>
+        </span>
+        <span>Serve over HTTP. Do not open as file://.</span>
+      </footer>
+    </div>
+    <script src="./vendor/chart.umd.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

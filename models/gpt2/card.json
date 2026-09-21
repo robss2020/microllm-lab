@@ -1,0 +1,17 @@
+{
+  "hf": "openai-community/gpt2",
+  "arch": "gpt2",
+  "vocabSize": 50257,
+  "nLayers": 12,
+  "dModel": 768,
+  "nHeads": 12,
+  "nKvHeads": 12,
+  "dFf": 3072,
+  "maxSeqLen": 1024,
+  "params": 124439808,
+  "q4Bytes": 80854688,
+  "bosId": 50256,
+  "eosId": 50256,
+  "template": "completion",
+  "qGroup": 32
+}

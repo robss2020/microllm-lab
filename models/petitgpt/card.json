@@ -1,0 +1,29 @@
+{
+  "id": "petitgpt",
+  "hf": "yangqi0/petitgpt",
+  "vocabSize": 32000,
+  "nLayers": 30,
+  "dModel": 576,
+  "nHeads": 9,
+  "nKvHeads": 3,
+  "dFf": 1536,
+  "maxSeqLen": 2048,
+  "ropeTheta": 10000,
+  "params": 124635456,
+  "q4Bytes": 78046720,
+  "bosId": 2,
+  "eosId": 3,
+  "padId": 0,
+  "unkId": 1,
+  "template": "petitgpt",
+  "specials": {
+    "<pad>": 0,
+    "<unk>": 1,
+    "<s>": 2,
+    "</s>": 3,
+    "<|system|>": 4,
+    "<|user|>": 5,
+    "<|assistant|>": 6
+  },
+  "qGroup": 32
+}

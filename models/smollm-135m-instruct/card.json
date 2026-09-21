@@ -1,0 +1,27 @@
+{
+  "hf": "HuggingFaceTB/SmolLM-135M-Instruct",
+  "vocabSize": 49152,
+  "nLayers": 30,
+  "dModel": 576,
+  "nHeads": 9,
+  "nKvHeads": 3,
+  "dFf": 1536,
+  "maxSeqLen": 2048,
+  "ropeTheta": 10000.0,
+  "headDim": 64,
+  "params": 134515008,
+  "q4Bytes": 84221440,
+  "bosId": 1,
+  "eosId": 2,
+  "padId": 2,
+  "unkId": 0,
+  "bosToken": "<|im_start|>",
+  "eosToken": "<|im_end|>",
+  "chatTemplate": null,
+  "specials": {
+    "<|im_start|>": 1,
+    "<|im_end|>": 2,
+    "<|endoftext|>": 0
+  },
+  "qGroup": 32
+}
