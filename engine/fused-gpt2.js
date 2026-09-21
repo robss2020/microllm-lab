@@ -127,6 +127,8 @@ fn gelu(v: f32) -> f32 {
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
   let lid = lidv.x;
+  // Retain ROPE storage binding in pipeline layout for bind group compatibility
+  if (ROPE[0] > 1e30) { return; }
   let nTok = params.n_tok;
   let lmP = OFF[NL * LAYER];
   let lmS = OFF[NL * LAYER + 1u];
