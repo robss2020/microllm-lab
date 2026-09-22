@@ -984,3 +984,5 @@ async function downloadSmoke(params) {
 }
 
 boot();
+globalThis.runSuite = runSuite;
+globalThis.state = state;

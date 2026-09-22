@@ -9,6 +9,7 @@ import { dequantizeToF32, f32View, u8View, u16View, scaleView } from "./weights.
 import { SPECIAL } from "./tokenizer.js";
 import { initMetal, encodeMetalTokens, METAL_MAX_TOK, CHAIN_TOK } from "./webgpu-metal.js";
 import { fusedGpt2Wgsl } from "./fused-gpt2.js";
+import { GpuGpt2Engine } from "./webgpu-gpt2.js";
 
 const MAX_IDS = 256;
 const SPEC_K = 2;
@@ -808,6 +809,9 @@ function lookupDraft(prompt, k, n) {
 
 export class GpuPetitGPT {
   constructor(cpuModel, gpuInfo) {
+    if (cpuModel?.cfg?.arch === "gpt2") {
+      return new GpuGpt2Engine(cpuModel, gpuInfo);
+    }
     this.cpu = cpuModel;
     this.cfg = cpuModel.cfg;
     this.kind = cpuModel.kind;
@@ -1232,3 +1236,5 @@ export function gpuMemoryEstimate(cfg, kind) {
   const kv = cfg.nLayers * cfg.nKvHeads * cfg.maxSeqLen * (cfg.dModel / cfg.nHeads) * 2 * 4;
   return { weightsDisk, weightsGpu, kv, total: weightsGpu + kv };
 }
+
+export { GpuGpt2Engine };

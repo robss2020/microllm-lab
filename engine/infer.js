@@ -241,6 +241,43 @@ function argmax(logits) {
   return bi;
 }
 
+function argmaxGpt2(logits, history = [], { noRepeatNgram = 3, penalty = 1.15 } = {}) {
+  const n_past = history.length;
+  let t1 = -1, t2 = -1;
+  if (noRepeatNgram === 3 && n_past >= 2) {
+    t1 = history[n_past - 2];
+    t2 = history[n_past - 1];
+  }
+  let bestIdx = 0;
+  let bestVal = -Infinity;
+  const recentWin = Math.max(0, n_past - 32);
+
+  for (let i = 0; i < logits.length; i++) {
+    let v = logits[i];
+    if (noRepeatNgram === 3 && n_past >= 2) {
+      for (let h = 0; h < n_past - 2; h++) {
+        if (history[h] === t1 && history[h + 1] === t2 && history[h + 2] === i) {
+          v = -1e9;
+          break;
+        }
+      }
+    }
+    if (penalty > 1.0 && v > -1e8) {
+      for (let h = recentWin; h < n_past; h++) {
+        if (history[h] === i) {
+          v = v > 0 ? v / penalty : v * penalty;
+          break;
+        }
+      }
+    }
+    if (v > bestVal) {
+      bestVal = v;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 export class PetitGPT {
   constructor(bundle) {
     this.bundle = bundle;
@@ -555,7 +592,7 @@ export class PetitGPT {
     const logits = this.forwardPrompt(ids);
     let ttft = performance.now() - t0;
     const out = [];
-    let next = argmax(logits);
+    let next = this.isGpt2 ? argmaxGpt2(logits, []) : argmax(logits);
     out.push(next);
     if (onToken) await onToken(next, { phase: "prefill", ms: ttft });
     if (next === eosId) {
@@ -569,7 +606,7 @@ export class PetitGPT {
     for (let i = 1; i < maxNewTokens; i++) {
       if (ids.length + out.length >= this.cfg.maxSeqLen) break;
       const stepLogits = this.forwardDecode(next);
-      next = argmax(stepLogits);
+      next = this.isGpt2 ? argmaxGpt2(stepLogits, out) : argmax(stepLogits);
       out.push(next);
       if (onToken) await onToken(next, { phase: "decode" });
       if (next === eosId) {
