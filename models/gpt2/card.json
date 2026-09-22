@@ -9,7 +9,7 @@
   "dFf": 3072,
   "maxSeqLen": 1024,
   "params": 124439808,
-  "q4Bytes": 250708720,
+  "q4Bytes": 80857856,
   "bosId": 50256,
   "eosId": 50256,
   "template": "completion",

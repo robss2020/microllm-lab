@@ -2,19 +2,20 @@
  * Dedicated WebGPU engine for GPT-2 (124M nanoGPT architecture).
  *
  * Implements:
+ * - Genuine Q4 group-32 quantization for all 12 transformer layers & lm_head
+ * - SmoothQuant channel scaling to eliminate activation outlier noise on lm_head
  * - Learned position embeddings (wpe) + token embeddings (wte / lm_head)
  * - LayerNorm with learnable scale and bias
  * - Multi-Head Attention (MHA) with full QKV projection, scaled dot-product attention
  * - MLP with 4x expansion, GELU activation, projection
- * - F16 linear weights for PyTorch-exact numeric precision
  * - 3-gram loop blocking and repetition penalty on generated tokens for cohesive output
  */
 
-import { f32View, u16View } from "./weights.js";
+import { f32View, u8View, scaleView } from "./weights.js";
 
-function packU16ToU32(u16) {
-  const pad = new Uint16Array(Math.ceil(u16.length / 2) * 2);
-  pad.set(u16);
+function packU8ToU32(u8) {
+  const pad = new Uint8Array(Math.ceil(u8.length / 4) * 4);
+  pad.set(u8);
   return new Uint32Array(pad.buffer);
 }
 
@@ -55,17 +56,35 @@ var<workgroup> red: array<f32, 256>;
 fn k_off(li: u32, t: u32, e: u32) -> u32 { return (li * MS + t) * D + e; }
 fn v_off(li: u32, t: u32, e: u32) -> u32 { return NL * MS * D + (li * MS + t) * D + e; }
 
-fn f16dot(row: u32, cols: u32, packOff: u32) -> f32 {
-  var s = 0.0;
-  let nW = cols / 2u;
-  let base = packOff + row * nW;
-  for (var w = 0u; w < nW; w++) {
-    let word = PACK[base + w];
-    let pair = unpack2x16float(word);
-    let xb = w * 2u;
-    s += pair.x * src[xb] + pair.y * src[xb + 1u];
+fn q4nibs(word: u32) -> vec4<f32> {
+  return vec4<f32>(
+    f32(word & 15u),
+    f32((word >> 4u) & 15u),
+    f32((word >> 8u) & 15u),
+    f32((word >> 12u) & 15u)
+  ) - vec4<f32>(8.0);
+}
+
+fn q4dot_src(row: u32, cols: u32, packOff: u32, scaleOff: u32) -> f32 {
+  let ng = cols / 32u;
+  let rowU = cols / 8u;
+  var acc = 0.0;
+  for (var g = 0u; g < ng; g++) {
+    let sc = SC[scaleOff + row * ng + g];
+    let base = packOff + row * rowU + g * 4u;
+    let xb = g * 32u;
+    var s = 0.0;
+    for (var w = 0u; w < 4u; w++) {
+      let word = PACK[base + w];
+      let i = xb + w * 8u;
+      let lo = q4nibs(word);
+      let hi = q4nibs(word >> 16u);
+      s += dot(lo, vec4<f32>(src[i], src[i + 1u], src[i + 2u], src[i + 3u]));
+      s += dot(hi, vec4<f32>(src[i + 4u], src[i + 5u], src[i + 6u], src[i + 7u]));
+    }
+    acc += s * sc;
   }
-  return s;
+  return acc;
 }
 
 fn reduce_sum(lid: u32) -> f32 {
@@ -93,33 +112,44 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
   let pos = step.pos;
   let tok = step.token;
   let lmP = OFF[0];
-  let wpe = OFF[1];
-  let lnf = OFF[2];
+  let lmS = OFF[1];
+  let wpe = OFF[2];
+  let lnf = OFF[3];
+  let scFac = OFF[4];
 
-  // 1. Embedding
+  // 1. Embedding: wte is stored in lm_head (scaled by scale_factors)
+  // We de-scale by scale_factors[i] to recover the true token embedding
   var i = lid;
   while (i < D) {
-    let word = PACK[lmP + (tok * D + i) / 2u];
-    let pair = unpack2x16float(word);
-    let emb = select(pair.x, pair.y, (i & 1u) == 1u);
+    let ng = D / 32u;
+    let rowU = D / 8u;
+    let g = i / 32u;
+    let sc = SC[lmS + tok * ng + g];
+    let word = PACK[lmP + tok * rowU + i / 8u];
+    let nib = (word >> ((i % 8u) * 4u)) & 15u;
+    let emb = ((f32(nib) - 8.0) * sc) / SC[scFac + i];
     SCR[X_OFF + i] = emb + SC[wpe + pos * D + i];
     i += 256u;
   }
   workgroupBarrier();
 
-  // 2. Transformer layers
+  // 2. Transformer layers (12 layers, each with stride 14 in OFF)
   for (var li = 0u; li < NL; li++) {
-    let b = 3u + li * 10u;
-    let qkvP = OFF[b];
-    let qkvB = OFF[b + 1u];
-    let projP = OFF[b + 2u];
-    let projB = OFF[b + 3u];
-    let fcP = OFF[b + 4u];
-    let fcB = OFF[b + 5u];
-    let mpP = OFF[b + 6u];
-    let mpB = OFF[b + 7u];
-    let ln1 = OFF[b + 8u];
-    let ln2 = OFF[b + 9u];
+    let b = 5u + li * 14u;
+    let qkvP = OFF[b + 0u];
+    let qkvS = OFF[b + 1u];
+    let qkvB = OFF[b + 2u];
+    let projP = OFF[b + 3u];
+    let projS = OFF[b + 4u];
+    let projB = OFF[b + 5u];
+    let fcP = OFF[b + 6u];
+    let fcS = OFF[b + 7u];
+    let fcB = OFF[b + 8u];
+    let mpP = OFF[b + 9u];
+    let mpS = OFF[b + 10u];
+    let mpB = OFF[b + 11u];
+    let ln1 = OFF[b + 12u];
+    let ln2 = OFF[b + 13u];
 
     // LayerNorm 1
     var ss = 0.0;
@@ -141,10 +171,10 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     }
     workgroupBarrier();
 
-    // QKV GEMV
+    // QKV GEMV (Q4 group-32)
     var row = lid;
     while (row < 3u * D) {
-      SCR[QKV_OFF + row] = f16dot(row, D, qkvP) + SC[qkvB + row];
+      SCR[QKV_OFF + row] = q4dot_src(row, D, qkvP, qkvS) + SC[qkvB + row];
       row += 256u;
     }
     workgroupBarrier();
@@ -215,7 +245,7 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
       workgroupBarrier();
     }
 
-    // Weighted sum of V
+    // Weighted sum of V into workgroup src
     e = lid;
     while (e < D) {
       let h = e / HD;
@@ -230,10 +260,10 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     }
     workgroupBarrier();
 
-    // Attention proj GEMV + residual add
+    // Attention proj GEMV (Q4 group-32) + residual add
     row = lid;
     while (row < D) {
-      SCR[X_OFF + row] += f16dot(row, D, projP) + SC[projB + row];
+      SCR[X_OFF + row] += q4dot_src(row, D, projP, projS) + SC[projB + row];
       row += 256u;
     }
     workgroupBarrier();
@@ -258,10 +288,10 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     }
     workgroupBarrier();
 
-    // FC GEMV + GELU
+    // FC GEMV (Q4 group-32) + GELU
     row = lid;
     while (row < FF) {
-      let v = f16dot(row, D, fcP) + SC[fcB + row];
+      let v = q4dot_src(row, D, fcP, fcS) + SC[fcB + row];
       let z = clamp(0.79788456 * (v + 0.044715 * v * v * v), -8.0, 8.0);
       SCR[FF1_OFF + row] = 0.5 * v * (1.0 + tanh(z));
       row += 256u;
@@ -276,16 +306,16 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     }
     workgroupBarrier();
 
-    // MLP Proj GEMV + residual add
+    // MLP Proj GEMV (Q4 group-32) + residual add
     row = lid;
     while (row < D) {
-      SCR[X_OFF + row] += f16dot(row, FF, mpP) + SC[mpB + row];
+      SCR[X_OFF + row] += q4dot_src(row, FF, mpP, mpS) + SC[mpB + row];
       row += 256u;
     }
     workgroupBarrier();
   }
 
-  // 3. Final LayerNorm
+  // 3. Final LayerNorm (with folded 1/scale_factors)
   var ss_f = 0.0;
   i = lid;
   while (i < D) { ss_f += SCR[X_OFF + i]; i += 256u; }
@@ -310,16 +340,26 @@ fn lm_head_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let row = gid.x;
   if (row >= VOCAB) { return; }
   let lmP = OFF[0];
-  var s = 0.0;
-  let nW = D / 2u;
-  let base = lmP + row * nW;
-  for (var w = 0u; w < nW; w++) {
-    let word = PACK[base + w];
-    let pair = unpack2x16float(word);
-    let xb = w * 2u;
-    s += pair.x * SCR[XN_OFF + xb] + pair.y * SCR[XN_OFF + xb + 1u];
+  let lmS = OFF[1];
+  let ng = D / 32u;
+  let rowU = D / 8u;
+  var acc = 0.0;
+  for (var g = 0u; g < ng; g++) {
+    let sc = SC[lmS + row * ng + g];
+    let base = lmP + row * rowU + g * 4u;
+    let xb = g * 32u;
+    var s = 0.0;
+    for (var w = 0u; w < 4u; w++) {
+      let word = PACK[base + w];
+      let i = xb + w * 8u;
+      let lo = q4nibs(word);
+      let hi = q4nibs(word >> 16u);
+      s += dot(lo, vec4<f32>(SCR[XN_OFF + i], SCR[XN_OFF + i + 1u], SCR[XN_OFF + i + 2u], SCR[XN_OFF + i + 3u]));
+      s += dot(hi, vec4<f32>(SCR[XN_OFF + i + 4u], SCR[XN_OFF + i + 5u], SCR[XN_OFF + i + 6u], SCR[XN_OFF + i + 7u]));
+    }
+    acc += s * sc;
   }
-  SCR[LOGITS_OFF + row] = s;
+  SCR[LOGITS_OFF + row] = acc;
 }
 
 struct ArgmaxParams {
@@ -407,7 +447,7 @@ export class GpuGpt2Engine {
     this.bundle = cpuModel.bundle;
     this.info = gpuInfo;
     this.device = gpuInfo.device;
-    this.mode = "f16-gpt2";
+    this.mode = "q4-gpt2";
     this.bytesAllocated = 0;
     this.cacheLen = 0;
     this.ready = false;
@@ -423,12 +463,17 @@ export class GpuGpt2Engine {
     let packU32 = 0;
     let scF = 0;
 
-    const pushF16 = (name) => {
-      const u32 = packU16ToU32(u16View(bundle, name));
-      offsets.push(packU32);
+    const pushQ4 = (name) => {
+      const packed = u8View(bundle, name);
+      const scales = scaleView(bundle, name);
+      const u32 = packU8ToU32(packed);
+      offsets.push(packU32, scF);
       packChunks.push(u32);
+      scChunks.push(new Float32Array(scales));
       packU32 += u32.length;
+      scF += scales.length;
     };
+
     const pushF32 = (name) => {
       const f32 = new Float32Array(f32View(bundle, name));
       offsets.push(scF);
@@ -436,21 +481,27 @@ export class GpuGpt2Engine {
       scF += f32.length;
     };
 
-    pushF16("lm_head");
+    // OFF[0], OFF[1]: lm_head packOff, scaleOff
+    pushQ4("lm_head");
+    // OFF[2]: wpe
     pushF32("wpe");
+    // OFF[3]: ln_f
     pushF32("ln_f");
+    // OFF[4]: scale_factors
+    pushF32("scale_factors");
 
+    // Transformer layers: 14 offsets per layer
     for (let li = 0; li < 12; li++) {
-      pushF16(`blocks.${li}.attn.qkv`);
-      pushF32(`blocks.${li}.attn.qkv_bias`);
-      pushF16(`blocks.${li}.attn.proj`);
-      pushF32(`blocks.${li}.attn.proj_bias`);
-      pushF16(`blocks.${li}.mlp.fc`);
-      pushF32(`blocks.${li}.mlp.fc_bias`);
-      pushF16(`blocks.${li}.mlp.proj`);
-      pushF32(`blocks.${li}.mlp.proj_bias`);
-      pushF32(`blocks.${li}.ln1`);
-      pushF32(`blocks.${li}.ln2`);
+      pushQ4(`blocks.${li}.attn.qkv`);        // +0, +1
+      pushF32(`blocks.${li}.attn.qkv_bias`);   // +2
+      pushQ4(`blocks.${li}.attn.proj`);       // +3, +4
+      pushF32(`blocks.${li}.attn.proj_bias`);  // +5
+      pushQ4(`blocks.${li}.mlp.fc`);          // +6, +7
+      pushF32(`blocks.${li}.mlp.fc_bias`);     // +8
+      pushQ4(`blocks.${li}.mlp.proj`);        // +9, +10
+      pushF32(`blocks.${li}.mlp.proj_bias`);   // +11
+      pushF32(`blocks.${li}.ln1`);            // +12
+      pushF32(`blocks.${li}.ln2`);            // +13
     }
 
     const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
@@ -656,4 +707,9 @@ export class GpuGpt2Engine {
       /* */
     }
   }
+}
+
+export async function createGpuGpt2Engine(weights, cfg) {
+  const engine = new GpuGpt2Engine(weights, weights.gpuInfo);
+  return await engine.init();
 }
