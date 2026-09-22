@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert HuggingFace GPT-2 (nanoGPT-shaped) to PGW1 Q4. Arch byte = 1."""
+"""Convert HuggingFace GPT-2 (nanoGPT-shaped) to PGW1 Q4 with SmoothQuant. Arch byte = 1."""
 from __future__ import annotations
 
 import json
@@ -71,22 +71,6 @@ def add_f32(entries, blobs, name, arr):
     )
 
 
-def add_f16(entries, blobs, name, arr):
-    data = np.ascontiguousarray(arr, np.float16)
-    off = blobs.tell()
-    blobs.write(data.tobytes())
-    entries.append(
-        {
-            "name": name,
-            "shape": list(data.shape),
-            "kind": "q4",
-            "storage": "f16",
-            "offset": off,
-            "nbytes": data.nbytes,
-        }
-    )
-
-
 def conv1d(w):
     # HF Conv1D weight is [in, out]; we want [out, in] row-major GEMV.
     return w.detach().float().cpu().numpy().T
@@ -98,7 +82,7 @@ def bias(t):
 
 def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"loading gpt2 {hf_id}", flush=True)
+    print(f"loading gpt2 {hf_id}...", flush=True)
     model = GPT2LMHeadModel.from_pretrained(hf_id)
     tok = AutoTokenizer.from_pretrained(hf_id, use_fast=True)
     model.eval()
@@ -111,28 +95,73 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
     d_ff = 4 * d
     tr = model.transformer
 
+    # 1. Calibration for SmoothQuant channel scaling on lm_head
+    print("calibrating activation outliers for SmoothQuant...", flush=True)
+    calibration_texts = [
+        "The capital of France is Paris.",
+        "The capital of Germany is Berlin.",
+        "Write a Python function that adds two numbers: def add(a, b): return a + b",
+        "Once upon a time in a small village nestled in the mountains,",
+        "In a shocking finding, scientists discovered a herd of unicorns living in a previously unexplored valley.",
+        "Hello! How are you doing today? I hope everything is going well.",
+        "To install dependencies, run pip install -r requirements.txt in your terminal.",
+        "The quick brown fox jumps over the lazy dog.",
+        "Deep learning models require careful optimization and quantization to run efficiently on edge hardware.",
+        "What is 2 + 2? The answer is 4."
+    ]
+
+    act_max = torch.zeros(d)
+    with torch.no_grad():
+        for t in calibration_texts:
+            ids = tok.encode(t, return_tensors="pt")
+            for i in range(1, ids.shape[1] + 1):
+                h = tr(ids[:, :i])[0]
+                act_max = torch.maximum(act_max, h[0, -1, :].abs())
+
+    print(f"  activation outlier max: {act_max.max().item():.2f}, median: {act_max.median().item():.2f}", flush=True)
+
+    w_lm = model.lm_head.weight.detach().float().cpu().numpy() # [50257, 768]
+    w_max = np.max(np.abs(w_lm), axis=0) # [768]
+    alpha = 0.3
+    act_max_np = act_max.numpy()
+    scale = (act_max_np ** alpha) / (np.maximum(w_max, 1e-5) ** (1 - alpha))
+    scale = scale / np.median(scale)
+
+    # 2. Package tensors into PGW1 Q4
     blobs = BytesIO()
     entries = []
-    # All linear projections in F16 precision to eliminate quantization error
-    add_f16(entries, blobs, "lm_head", tr.wte.weight.detach().float().cpu().numpy())
+
+    # Per-channel scale factors (768 floats)
+    add_f32(entries, blobs, "scale_factors", scale)
+
+    # lm_head: scaled by channel scales and quantized to Q4
+    w_lm_scaled = w_lm * scale[None, :]
+    add_q4(entries, blobs, "lm_head", w_lm_scaled)
+
+    # wpe: position embedding
     add_f32(entries, blobs, "wpe", tr.wpe.weight.detach().float().cpu().numpy()[:n_ctx])
-    ln_f = np.concatenate([bias(tr.ln_f.weight), bias(tr.ln_f.bias)])
+
+    # ln_f: gamma and beta divided by scale
+    ln_f_w = bias(tr.ln_f.weight) / scale
+    ln_f_b = bias(tr.ln_f.bias) / scale
+    ln_f = np.concatenate([ln_f_w, ln_f_b])
     add_f32(entries, blobs, "ln_f", ln_f)
 
+    # 12 Transformer Blocks in pure Q4
     for i, block in enumerate(tr.h):
         ln1 = np.concatenate([bias(block.ln_1.weight), bias(block.ln_1.bias)])
         add_f32(entries, blobs, f"blocks.{i}.ln1", ln1)
-        add_f16(entries, blobs, f"blocks.{i}.attn.qkv", conv1d(block.attn.c_attn.weight))
+        add_q4(entries, blobs, f"blocks.{i}.attn.qkv", conv1d(block.attn.c_attn.weight))
         add_f32(entries, blobs, f"blocks.{i}.attn.qkv_bias", bias(block.attn.c_attn.bias))
-        add_f16(entries, blobs, f"blocks.{i}.attn.proj", conv1d(block.attn.c_proj.weight))
+        add_q4(entries, blobs, f"blocks.{i}.attn.proj", conv1d(block.attn.c_proj.weight))
         add_f32(entries, blobs, f"blocks.{i}.attn.proj_bias", bias(block.attn.c_proj.bias))
         ln2 = np.concatenate([bias(block.ln_2.weight), bias(block.ln_2.bias)])
         add_f32(entries, blobs, f"blocks.{i}.ln2", ln2)
-        add_f16(entries, blobs, f"blocks.{i}.mlp.fc", conv1d(block.mlp.c_fc.weight))
+        add_q4(entries, blobs, f"blocks.{i}.mlp.fc", conv1d(block.mlp.c_fc.weight))
         add_f32(entries, blobs, f"blocks.{i}.mlp.fc_bias", bias(block.mlp.c_fc.bias))
-        add_f16(entries, blobs, f"blocks.{i}.mlp.proj", conv1d(block.mlp.c_proj.weight))
+        add_q4(entries, blobs, f"blocks.{i}.mlp.proj", conv1d(block.mlp.c_proj.weight))
         add_f32(entries, blobs, f"blocks.{i}.mlp.proj_bias", bias(block.mlp.c_proj.bias))
-        print(f"  layer {i+1}/{n_layers}", flush=True)
+        print(f"  layer {i+1}/{n_layers} quantized to Q4", flush=True)
 
     payload = blobs.getvalue()
     table = json.dumps(entries, separators=(",", ":")).encode()
@@ -141,7 +170,7 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
     payload_off = table_off + len(table) + pad
     header = bytearray(256)
     header[0:4] = b"PGW1"
-    header[4] = 1 # f16
+    header[4] = 4 # Q4 format
     header[5] = ARCH_GPT2
     struct.pack_into("<8I", header, 8, vocab, n_layers, d, nh, nh, d_ff, n_ctx, 1)
     struct.pack_into("<III", header, 40, table_off, len(table), payload_off)
@@ -177,7 +206,7 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
         "qGroup": GROUP,
     }
     (out_dir / "card.json").write_text(json.dumps(card, indent=2))
-    print(f"wrote {bin_path} ({bin_path.stat().st_size/1e6:.1f} MB)", flush=True)
+    print(f"successfully wrote {bin_path} ({bin_path.stat().st_size/1e6:.1f} MB)", flush=True)
 
 
 if __name__ == "__main__":
