@@ -113,7 +113,7 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
 
     blobs = BytesIO()
     entries = []
-    # lm_head requires F16 precision to avoid catastrophic logit collapse on 50k vocab
+    # All linear projections in F16 precision to eliminate quantization error
     add_f16(entries, blobs, "lm_head", tr.wte.weight.detach().float().cpu().numpy())
     add_f32(entries, blobs, "wpe", tr.wpe.weight.detach().float().cpu().numpy()[:n_ctx])
     ln_f = np.concatenate([bias(tr.ln_f.weight), bias(tr.ln_f.bias)])
@@ -122,15 +122,15 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
     for i, block in enumerate(tr.h):
         ln1 = np.concatenate([bias(block.ln_1.weight), bias(block.ln_1.bias)])
         add_f32(entries, blobs, f"blocks.{i}.ln1", ln1)
-        add_q4(entries, blobs, f"blocks.{i}.attn.qkv", conv1d(block.attn.c_attn.weight))
+        add_f16(entries, blobs, f"blocks.{i}.attn.qkv", conv1d(block.attn.c_attn.weight))
         add_f32(entries, blobs, f"blocks.{i}.attn.qkv_bias", bias(block.attn.c_attn.bias))
-        add_q4(entries, blobs, f"blocks.{i}.attn.proj", conv1d(block.attn.c_proj.weight))
+        add_f16(entries, blobs, f"blocks.{i}.attn.proj", conv1d(block.attn.c_proj.weight))
         add_f32(entries, blobs, f"blocks.{i}.attn.proj_bias", bias(block.attn.c_proj.bias))
         ln2 = np.concatenate([bias(block.ln_2.weight), bias(block.ln_2.bias)])
         add_f32(entries, blobs, f"blocks.{i}.ln2", ln2)
-        add_q4(entries, blobs, f"blocks.{i}.mlp.fc", conv1d(block.mlp.c_fc.weight))
+        add_f16(entries, blobs, f"blocks.{i}.mlp.fc", conv1d(block.mlp.c_fc.weight))
         add_f32(entries, blobs, f"blocks.{i}.mlp.fc_bias", bias(block.mlp.c_fc.bias))
-        add_q4(entries, blobs, f"blocks.{i}.mlp.proj", conv1d(block.mlp.c_proj.weight))
+        add_f16(entries, blobs, f"blocks.{i}.mlp.proj", conv1d(block.mlp.c_proj.weight))
         add_f32(entries, blobs, f"blocks.{i}.mlp.proj_bias", bias(block.mlp.c_proj.bias))
         print(f"  layer {i+1}/{n_layers}", flush=True)
 
@@ -141,9 +141,9 @@ def convert(hf_id: str, out_dir: Path, max_seq: int = 1024):
     payload_off = table_off + len(table) + pad
     header = bytearray(256)
     header[0:4] = b"PGW1"
-    header[4] = 4
+    header[4] = 1 # f16
     header[5] = ARCH_GPT2
-    struct.pack_into("<8I", header, 8, vocab, n_layers, d, nh, nh, d_ff, n_ctx, GROUP)
+    struct.pack_into("<8I", header, 8, vocab, n_layers, d, nh, nh, d_ff, n_ctx, 1)
     struct.pack_into("<III", header, 40, table_off, len(table), payload_off)
     struct.pack_into("<d", header, 56, 10000.0)
     struct.pack_into("<d", header, 64, 1.0)
