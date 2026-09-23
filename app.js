@@ -419,7 +419,7 @@ async function loadCard(m) {
 
 async function ensureLoaded() {
   const id = state.active;
-  if (state.loaded === id && state.gpuEngine) return;
+  if (state.loaded === id && (state.gpuEngine || state.backend === "worker" || state.backend === "cpu" || state.backend === "wasm")) return;
   const m = modelById(id);
   if (!m) throw new Error("no model selected");
   setBusy(true);
@@ -440,6 +440,7 @@ async function ensureLoaded() {
     const bundle = parsePgw(buf);
     const tok = await getTokenizer();
     void tok;
+    let gpuOk = false;
     if (state.preferGpu && $("prefer-gpu").checked) {
       const g = await tryWebGpu();
       $("gpu-name").textContent = g.ok
@@ -459,13 +460,41 @@ async function ensureLoaded() {
         state.lastMetrics = { ...(state.lastMetrics || {}), gpuBytes: engine.bytesAllocated };
         renderHud();
         setProgress(0);
+        gpuOk = true;
         return;
       }
     }
-    worker.postMessage({ cmd: "load", kind: "q4", preferGpu: false, buffer: buf });
-    state.backend = "worker";
-    state.loaded = id;
-    log("ready  worker fallback  " + m.name);
+    if (!gpuOk) {
+      $("gpu-name").textContent = "Adapter: none (CPU fallback)";
+      const tokenizerSpec = await fetch(m.tokenizer).then((r) => r.json());
+      await new Promise((resolve, reject) => {
+        const onMsg = (ev) => {
+          const msg = ev.data;
+          if (msg.type === "loaded") {
+            worker.removeEventListener("message", onMsg);
+            state.backend = msg.backend || "worker";
+            state.loaded = id;
+            log(`ready  ${m.name}  backend=${msg.backend || "worker"}`);
+            resolve(msg);
+          } else if (msg.type === "error") {
+            worker.removeEventListener("message", onMsg);
+            reject(new Error(msg.message));
+          }
+        };
+        worker.addEventListener("message", onMsg);
+        worker.postMessage({
+          cmd: "load",
+          modelId: id,
+          kind: "q4",
+          preferGpu: false,
+          buffer: buf,
+          card: state.card,
+          tokenizerSpec,
+        });
+      });
+      renderHud();
+      setProgress(0);
+    }
   } finally {
     setBusy(false);
     setProgress(0);
@@ -526,7 +555,7 @@ function generateOnce(prompt, maxNew, opts = {}) {
       }
     };
     worker.addEventListener("message", onMsg);
-    worker.postMessage({ cmd: "generate", prompt, maxNewTokens: maxNew });
+    worker.postMessage({ cmd: "generate", prompt, maxNewTokens: maxNew, opts });
   });
 }
 
@@ -986,3 +1015,6 @@ async function downloadSmoke(params) {
 boot();
 globalThis.runSuite = runSuite;
 globalThis.state = state;
+globalThis.setActive = setActive;
+globalThis.ensureLoaded = ensureLoaded;
+globalThis.generateOnce = generateOnce;

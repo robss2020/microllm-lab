@@ -1,4 +1,4 @@
-import { loadTokenizerFromJson, encodeChat, SPECIAL } from "./tokenizer.js";
+import { loadTokenizerFromJson, encodeMessages, SPECIAL } from "./tokenizer.js";
 import { parsePgw } from "./weights.js";
 import { PetitGPT } from "./infer.js";
 import { initWasm, wasmAvailable, gemvF32Wasm } from "./wasm.js";
@@ -8,18 +8,13 @@ let tokenizer = null;
 let cpu = null;
 let gpu = null;
 let backend = "none";
-let dtype = null;
+let currentModelId = null;
+let activeCard = {};
 let wasmOk = false;
 let gpuInfo = null;
 
 function post(msg) {
   self.postMessage(msg);
-}
-
-async function ensureTokenizer() {
-  if (tokenizer) return;
-  const spec = await fetch("../tokenizer.json").then((r) => r.json());
-  tokenizer = loadTokenizerFromJson(spec);
 }
 
 function attachWasmGemv(model) {
@@ -36,8 +31,20 @@ function attachWasmGemv(model) {
   return true;
 }
 
-async function loadModel(kind, preferGpu, buffer) {
-  await ensureTokenizer();
+async function loadModel(msg) {
+  const modelId = msg.modelId || msg.dtype || msg.kind || "petitgpt";
+  const preferGpu = msg.preferGpu !== false;
+  const buffer = msg.buffer;
+  activeCard = msg.card || {};
+  currentModelId = modelId;
+
+  if (msg.tokenizerSpec) {
+    tokenizer = loadTokenizerFromJson(msg.tokenizerSpec);
+  } else if (!tokenizer) {
+    const spec = await fetch("../tokenizer.json").then((r) => r.json());
+    tokenizer = loadTokenizerFromJson(spec);
+  }
+
   if (gpu) {
     try {
       gpu.destroy();
@@ -48,7 +55,7 @@ async function loadModel(kind, preferGpu, buffer) {
   }
   cpu = null;
   backend = "none";
-  dtype = kind;
+
   const bundle = parsePgw(buffer);
   cpu = new PetitGPT(bundle);
   let usedWasm = false;
@@ -100,16 +107,20 @@ async function loadModel(kind, preferGpu, buffer) {
       post({ type: "log", level: "warn", message: "WebGPU init failed: " + e.message });
     }
   }
+
   if (!usedGpu) backend = usedWasm ? "wasm" : "cpu";
+
   const heap = globalThis.performance?.memory
     ? {
         jsHeap: performance.memory.usedJSHeapSize,
         jsHeapLimit: performance.memory.jsHeapSizeLimit,
       }
     : {};
+
   post({
     type: "loaded",
-    dtype: kind,
+    modelId,
+    dtype: modelId,
     backend,
     wasm: wasmOk,
     gpu: usedGpu
@@ -125,21 +136,23 @@ async function loadModel(kind, preferGpu, buffer) {
   });
 }
 
-async function generate(prompt, maxNew) {
-  if (!cpu) throw new Error("no model loaded");
-  const ids = encodeChat(tokenizer, [{ role: "user", content: prompt }]);
+async function generate(prompt, maxNew, opts = {}) {
+  if (!cpu && !gpu) throw new Error("no model loaded");
+  const ids = encodeMessages(tokenizer, [{ role: "user", content: prompt }], activeCard);
   const engine = gpu || cpu;
   const t0 = performance.now();
+  const eosId = opts.ignoreEos ? -1 : (activeCard.eosId ?? SPECIAL.EOS);
   const result = await engine.generate(ids, {
     maxNewTokens: maxNew,
-    eosId: SPECIAL.EOS,
+    eosId,
     onToken: async (id, meta) => {
-      const piece = tokenizer.decode([id]);
+      const piece = tokenizer.decode([id], true);
       post({ type: "token", id, piece, ...meta });
     },
   });
   const text = tokenizer.decode(
-    result.generatedIds.at(-1) === SPECIAL.EOS ? result.generatedIds.slice(0, -1) : result.generatedIds,
+    result.generatedIds.at(-1) === eosId ? result.generatedIds.slice(0, -1) : result.generatedIds,
+    true
   );
   const raw = tokenizer.decode(result.generatedIds);
   const totalMs = performance.now() - t0;
@@ -155,18 +168,18 @@ async function generate(prompt, maxNew) {
     totalMs,
     tokPerS: n / (totalMs / 1000),
     backend,
-    dtype,
+    dtype: currentModelId,
   });
-  return { text, raw, ...result, totalMs, backend, dtype };
+  return { text, raw, ...result, totalMs, backend, dtype: currentModelId };
 }
 
 self.onmessage = async (ev) => {
   const m = ev.data || {};
   try {
     if (m.cmd === "load") {
-      await loadModel(m.dtype, m.preferGpu !== false, m.buffer);
+      await loadModel(m);
     } else if (m.cmd === "generate") {
-      await generate(m.prompt, m.maxNewTokens || 64);
+      await generate(m.prompt, m.maxNewTokens || 64, m.opts || {});
     } else if (m.cmd === "unload") {
       if (gpu) gpu.destroy();
       gpu = null;

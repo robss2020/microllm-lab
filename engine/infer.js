@@ -88,18 +88,26 @@ function gemvQ8(m, n, q, wOff, scale, scaleOff, x, y) {
 function gemvQ4(m, n, packed, wOffBytes, scale, scaleOff, group, x, y) {
   const ng = n / group;
   const packedRow = n / 2;
+  const halfGroup = group / 2;
   for (let i = 0; i < m; i++) {
     let acc = 0;
     const row = wOffBytes + i * packedRow;
     const so = scaleOff + i * ng;
     for (let g = 0; g < ng; g++) {
       const sc = scale[so + g];
-      const base = row + g * (group / 2);
+      const base = row + g * halfGroup;
+      const xbase = g * group;
       let s = 0;
-      for (let k = 0; k < group; k += 2) {
-        const b = packed[base + k / 2];
-        s += ((b & 15) - 8) * x[g * group + k];
-        s += ((b >> 4) - 8) * x[g * group + k + 1];
+      for (let k = 0; k < halfGroup; k += 4) {
+        const b0 = packed[base + k];
+        const b1 = packed[base + k + 1];
+        const b2 = packed[base + k + 2];
+        const b3 = packed[base + k + 3];
+        const xi = xbase + k * 2;
+        s += ((b0 & 15) - 8) * x[xi] + ((b0 >> 4) - 8) * x[xi + 1] +
+             ((b1 & 15) - 8) * x[xi + 2] + ((b1 >> 4) - 8) * x[xi + 3] +
+             ((b2 & 15) - 8) * x[xi + 4] + ((b2 >> 4) - 8) * x[xi + 5] +
+             ((b3 & 15) - 8) * x[xi + 6] + ((b3 >> 4) - 8) * x[xi + 7];
       }
       acc += s * sc;
     }
@@ -402,6 +410,10 @@ export class PetitGPT {
           row[g * group + k + 1] = ((b >> 4) - 8) * sc;
         }
       }
+    }
+    if (this.isGpt2 && this.norms.scale_factors) {
+      const sf = this.norms.scale_factors;
+      for (let i = 0; i < n; i++) row[i] /= sf[i];
     }
   }
 
