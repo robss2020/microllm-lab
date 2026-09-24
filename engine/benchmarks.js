@@ -167,6 +167,23 @@ export const BUILTIN_SUITE = {
         return { pass: /^yes\b/i.test(t), detail: t.slice(0, 40) };
       },
     },
+    {
+      id: "sustained_speed",
+      name: "Sustained Speed (256 tokens)",
+      prompt:
+        "Write a detailed essay explaining how small language models running on edge devices enable autonomous spacecraft and rovers to make real-time decisions without waiting for ground control communication. Discuss latency, reliability, local reasoning, and sensor triage across multiple paragraphs.",
+      maxNewTokens: 256,
+      opts: { ignoreEos: true },
+      check: (text, info) => {
+        const n = info?.generatedIds?.length || 0;
+        const tps = info?.tokPerS || 0;
+        return {
+          pass: n >= 120,
+          score: Math.min(n / 256, 1),
+          detail: `sustained: ${tps.toFixed(1)} tok/s (${n} tok in ${Math.round(info?.totalMs || 0)}ms)`,
+        };
+      },
+    },
   ],
 };
 
@@ -292,3 +309,29 @@ export function compileCustom(source) {
   validateSuite(value);
   return value;
 }
+
+export const SUSTAINED_SUITE = {
+  id: "sustained-v1",
+  name: "Sustained Throughput Benchmark",
+  description: "Continuous 256-token sustained generation test.",
+  maxNewTokens: 256,
+  tests: [
+    {
+      id: "sustained_speed",
+      name: "Sustained Speed (256 tokens)",
+      prompt:
+        "Write a detailed essay explaining how small language models running on edge devices enable autonomous spacecraft and rovers to make real-time decisions without waiting for ground control communication. Discuss latency, reliability, local reasoning, and sensor triage across multiple paragraphs.",
+      maxNewTokens: 256,
+      opts: { ignoreEos: true },
+      check: (text, info) => {
+        const n = info?.generatedIds?.length || 0;
+        const tps = info?.tokPerS || 0;
+        return {
+          pass: n >= 120,
+          score: Math.min(n / 256, 1),
+          detail: `sustained: ${tps.toFixed(1)} tok/s (${n} tok in ${Math.round(info?.totalMs || 0)}ms)`,
+        };
+      },
+    },
+  ],
+};
