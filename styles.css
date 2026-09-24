@@ -475,6 +475,181 @@ a { color: var(--fg); }
   overflow: auto;
 }
 
+.webgpu-notice {
+  background: color-mix(in oklab, var(--warn) 9%, var(--bg-elevated));
+  border-bottom: 1px solid color-mix(in oklab, var(--warn) 40%, var(--border));
+  padding: var(--space-4) var(--space-5);
+  animation: notice-slide-down var(--motion-fast) var(--ease-out);
+}
+@keyframes notice-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.notice-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.notice-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.notice-icon {
+  font-size: 1.35rem;
+  line-height: 1.2;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.notice-titles {
+  min-width: 0;
+}
+.notice-title {
+  margin: 0 0 4px;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--warn);
+}
+.notice-desc {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  max-width: 82ch;
+  line-height: 1.45;
+}
+.notice-desc strong {
+  color: var(--fg);
+}
+.notice-dismiss {
+  padding: 4px 10px;
+  min-height: 32px;
+  color: var(--fg-subtle);
+  font-size: var(--text-base);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.notice-dismiss:hover {
+  color: var(--fg);
+  background: var(--bg-subtle);
+}
+.notice-body {
+  margin-top: var(--space-3);
+  padding-left: calc(1.35rem + var(--space-3));
+}
+.notice-platform-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: color-mix(in oklab, var(--warn) 18%, var(--bg));
+  color: var(--warn);
+  border: 1px solid color-mix(in oklab, var(--warn) 35%, transparent);
+  border-radius: var(--radius-xs);
+  padding: 3px 9px;
+  margin-bottom: var(--space-3);
+}
+.notice-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  max-width: 86ch;
+}
+.notice-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+.step-num {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  background: var(--bg-subtle);
+  color: var(--accent);
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.step-content {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+.step-content code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-subtle);
+  color: var(--fg);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.step-content code:hover {
+  border-color: var(--accent);
+}
+.copy-pill {
+  appearance: none;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--motion-quick) var(--ease-out);
+}
+.copy-pill:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.copy-pill.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.step-tip {
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+}
+.notice-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.notice-alt-tip {
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+}
+.webgpu-notice.success {
+  background: color-mix(in oklab, var(--ok) 12%, var(--bg-elevated));
+  border-bottom-color: color-mix(in oklab, var(--ok) 40%, var(--border));
+}
+.webgpu-notice.success .notice-title {
+  color: var(--ok);
+}
+
+@media (max-width: 640px) {
+  .notice-body { padding-left: 0; }
+  .notice-steps li { align-items: flex-start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
