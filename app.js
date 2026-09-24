@@ -448,28 +448,37 @@ async function ensureLoaded() {
         ? `Adapter: ${g.vendor || ""} (${g.name || ""})`
         : `Adapter: ${g.reason || "none"}`;
       if (g.ok) {
-        const { PetitGPT } = await import("./engine/infer.js");
-        const cpu = new PetitGPT(bundle);
-        const engine = new GpuPetitGPT(cpu, g);
-        await engine.init();
-        state.gpuEngine = engine;
-        state.backend = "webgpu";
-        state.loaded = id;
-        log(
-          `ready  ${m.name}  backend=webgpu  mode=${engine.mode}  ${(engine.bytesAllocated / 1048576).toFixed(0)} MB`,
-        );
-        state.lastMetrics = { ...(state.lastMetrics || {}), gpuBytes: engine.bytesAllocated };
-        renderHud();
-        setProgress(0);
-        gpuOk = true;
-        return;
+        try {
+          const { PetitGPT } = await import("./engine/infer.js");
+          const cpu = new PetitGPT(bundle);
+          const engine = new GpuPetitGPT(cpu, g);
+          await engine.init();
+          state.gpuEngine = engine;
+          state.backend = "webgpu";
+          state.loaded = id;
+          log(
+            `ready  ${m.name}  backend=webgpu  mode=${engine.mode}  ${(engine.bytesAllocated / 1048576).toFixed(0)} MB`,
+          );
+          state.lastMetrics = { ...(state.lastMetrics || {}), gpuBytes: engine.bytesAllocated };
+          renderHud();
+          setProgress(0);
+          gpuOk = true;
+          return;
+        } catch (gpuErr) {
+          log(`webgpu init failed (${gpuErr.message || gpuErr}); falling back to WASM/CPU`);
+          try { state.gpuEngine?.destroy?.(); } catch {}
+          state.gpuEngine = null;
+          gpuOk = false;
+        }
       }
     }
     if (!gpuOk) {
       const ua = navigator.userAgent || "";
       const isFirefox = /Firefox|FxiOS/i.test(ua);
-      if (isFirefox) {
-        $("gpu-name").innerHTML = `Adapter: none (Firefox WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
+      const isSafari = !isFirefox && /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR/i.test(ua);
+      if (isFirefox || isSafari) {
+        const browserLabel = isFirefox ? "Firefox" : "Safari";
+        $("gpu-name").innerHTML = `Adapter: none (${browserLabel} WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
         $("btn-show-webgpu-help")?.addEventListener("click", () => {
           sessionStorage.removeItem("dismissed_webgpu_notice");
           checkWebGpuNotice(true);
@@ -1244,17 +1253,19 @@ async function runAutoSuite(params) {
   document.title = `DONE ${tag} wall ${wallMs.toFixed(0)}ms`;
 }
 
-async function checkWebGpuNotice(forceShow = false, mockUa = null) {
+async function checkWebGpuNotice(forceShow = false, mockUa = null, mockGpu = null) {
   const noticeEl = $("webgpu-notice");
   if (!noticeEl) return;
 
   const ua = mockUa || globalThis.__mockUA || navigator.userAgent || "";
   const isFirefox = /Firefox|FxiOS/i.test(ua);
+  const isSafari = !isFirefox && /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
   const isWindows = /Windows|Win32|Win64/i.test(ua) || (!/Mac/i.test(ua) && /Win/i.test(navigator.platform || ""));
   const isMac = !isWindows && (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(navigator.platform || ""));
   const isLinux = !isWindows && !isMac && /Linux/i.test(ua) && !/Android/i.test(ua);
 
-  const g = await tryWebGpu();
+  const g = mockGpu || (globalThis.__mockWebGpu !== undefined ? globalThis.__mockWebGpu : await tryWebGpu());
   if (g.ok) {
     if (forceShow) {
       noticeEl.className = "webgpu-notice success";
@@ -1288,6 +1299,13 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null) {
       checkWebGpuNotice(true);
       $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
     });
+  } else if (isSafari) {
+    $("gpu-name").innerHTML = `Adapter: none (Safari WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
+    $("btn-show-webgpu-help")?.addEventListener("click", () => {
+      sessionStorage.removeItem("dismissed_webgpu_notice");
+      checkWebGpuNotice(true);
+      $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
+    });
   }
 
   const isDismissed = sessionStorage.getItem("dismissed_webgpu_notice") === "1";
@@ -1300,8 +1318,11 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null) {
   noticeEl.hidden = false;
 
   const osLabel = isMac ? "macOS" : isWindows ? "Windows" : isLinux ? "Linux" : "your OS";
+  const browserLabel = isFirefox ? "Firefox" : isSafari ? "Safari" : "Browser";
   const platformTitle = isFirefox
     ? `Turn on WebGPU in Firefox (${osLabel}) for 10–20× Faster Performance`
+    : isSafari
+    ? `Turn on WebGPU in Safari (${isIOS ? "iOS" : "macOS"}) for 10–20× Faster Performance`
     : `WebGPU Hardware Acceleration Not Detected`;
 
   let stepsHtml = "";
@@ -1425,6 +1446,76 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null) {
         </li>
       `;
     }
+  } else if (isSafari) {
+    if (isIOS) {
+      stepsHtml = `
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-content">
+            Open the <strong>Settings</strong> app on your iPhone or iPad.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-content">
+            Scroll down and tap <strong>Safari</strong>.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-content">
+            Scroll to the bottom and tap <strong>Advanced</strong> → <strong>Feature Flags</strong>.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-content">
+            Find <code class="click-copy" data-copy="WebGPU" title="Click to copy">WebGPU</code> and toggle the switch to <strong>On (green)</strong>.
+            <button type="button" class="copy-pill" data-copy="WebGPU">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-content">
+            Switch back to Safari and <strong>reload this page</strong>.
+          </div>
+        </li>
+      `;
+    } else {
+      stepsHtml = `
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-content">
+            In Safari's top menu bar, click <strong>Safari → Settings…</strong> (or press <kbd style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:4px;">⌘,</kbd>).
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-content">
+            Click the <strong>Advanced</strong> tab and check <strong>"Show features for web developers"</strong> (in older Safari: "Show Develop menu").
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-content">
+            Click the <strong>Feature Flags</strong> tab (or open the top <strong>Develop → Feature Flags</strong> menu).
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-content">
+            Type <code class="click-copy" data-copy="WebGPU" title="Click to copy">WebGPU</code> in the filter box and check the box next to <strong>WebGPU</strong> to enable it.
+            <button type="button" class="copy-pill" data-copy="WebGPU">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-content">
+            <strong>Reload this page</strong> — models will immediately execute directly on your Apple Silicon / GPU hardware!
+          </div>
+        </li>
+      `;
+    }
   } else {
     stepsHtml = `
       <li>
@@ -1458,7 +1549,7 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null) {
       <button type="button" class="btn ghost notice-dismiss" id="btn-dismiss-notice" aria-label="Dismiss notice" title="Dismiss notice">✕</button>
     </div>
     <div class="notice-body">
-      <div class="notice-platform-badge">Detected: ${isFirefox ? "Firefox" : "Browser"} on ${osLabel} · Status: WebGPU not active (${g.reason || "no adapter"})</div>
+      <div class="notice-platform-badge">Detected: ${isFirefox ? "Firefox" : isSafari ? "Safari" : "Browser"} on ${isIOS ? "iOS" : osLabel} · Status: WebGPU not active (${g.reason || "no adapter"})</div>
       <ol class="notice-steps">
         ${stepsHtml}
       </ol>
@@ -1527,20 +1618,33 @@ async function boot() {
   $("custom-code").value = EXAMPLE_CUSTOM;
   $("ex-fn").textContent = EXAMPLE_CUSTOM_FN;
   try {
-    state.catalog = await loadCatalog();
-    state.models = state.catalog.models || [];
-  } catch (e) {
-    log("catalog: " + e.message);
-    state.models = [];
+    try {
+      state.catalog = await loadCatalog();
+      state.models = state.catalog.models || [];
+    } catch (e) {
+      log("catalog: " + e.message);
+      state.models = [];
+    }
+    await refreshCache();
+    state.active = state.models.some((m) => m.id === state.active) ? state.active : state.models[0]?.id || "petitgpt";
+    renderModels();
+    renderPrompts();
+    renderHud();
+    renderCompare();
+    updateEstimate();
+    checkWebGpuNotice();
+  } catch (bootErr) {
+    log("boot error: " + (bootErr.message || bootErr));
+  } finally {
+    // Dismiss loader now that initial UI paint is ready (or even if boot had a non-fatal error)
+    const loader = $("app-loader");
+    if (loader) {
+      loader.style.opacity = "0";
+      setTimeout(() => {
+        loader.remove();
+      }, 350);
+    }
   }
-  await refreshCache();
-  state.active = state.models.some((m) => m.id === state.active) ? state.active : state.models[0]?.id || "petitgpt";
-  renderModels();
-  renderPrompts();
-  renderHud();
-  renderCompare();
-  updateEstimate();
-  checkWebGpuNotice();
   $("active-dtype").addEventListener("change", (e) => setActive(e.target.value));
   $("dl-all")?.addEventListener("click", () => downloadAll());
   $("ds-all")?.addEventListener("click", () => discardAll());
@@ -1588,18 +1692,23 @@ async function boot() {
   $("btn-copy-cert-img")?.addEventListener("click", async () => {
     const canvas = $("cert-canvas");
     if (!canvas) return;
+    if (!navigator.clipboard?.write) {
+      return showCertMsg("⚠️ Direct image copy not supported. Please use 'Download Certificate'.");
+    }
     try {
-      canvas.toBlob(async (blob) => {
-        if (!blob) return showCertMsg("❌ Could not create image blob");
-        try {
-          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-          showCertMsg("✅ Certificate image copied to clipboard!");
-        } catch (err) {
-          showCertMsg("⚠️ Clipboard write failed. Please use 'Download Certificate'.");
-        }
+      // Safari / WebKit requires constructing ClipboardItem synchronously in the click handler
+      // passing a Promise<Blob> so the user gesture is preserved.
+      const blobPromise = new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Could not create image blob"));
+        }, "image/png");
       });
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]);
+      showCertMsg("✅ Certificate image copied to clipboard!");
     } catch (err) {
-      showCertMsg("⚠️ Browser does not support copying image to clipboard directly.");
+      log("clipboard copy cert failed: " + err.message);
+      showCertMsg("⚠️ Clipboard write failed. Please use 'Download Certificate'.");
     }
   });
   $("btn-share-x")?.addEventListener("click", () => {
@@ -1647,14 +1756,6 @@ async function boot() {
     renderCertificate();
   }
 
-  // Dismiss loader now that initial UI paint is ready
-  const loader = $("app-loader");
-  if (loader) {
-    loader.style.opacity = "0";
-    setTimeout(() => {
-      loader.remove();
-    }, 350);
-  }
   $("run-custom").addEventListener("click", async () => {
     try {
       const suite = compileCustom($("custom-code").value);

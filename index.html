@@ -20,6 +20,45 @@
         <p class="loader-msg" id="loader-msg">Initializing WebGPU engine & model catalog…</p>
       </div>
     </div>
+    <script>
+      (function() {
+        if (location.protocol === "file:") {
+          function showFileNotice() {
+            var loaderBox = document.querySelector(".loader-box");
+            if (loaderBox) {
+              loaderBox.innerHTML =
+                '<div style="font-size:36px;margin-bottom:12px">⚠️</div>' +
+                '<h2 class="loader-title" style="color:var(--warn,#c4b18a);margin-bottom:12px;">Local HTTP Server Required</h2>' +
+                '<p style="color:var(--fg-muted,#a1a1aa);margin-bottom:16px;line-height:1.6;font-size:14px;">' +
+                  'Browsers (including Safari & Chrome) block ES modules, WebGPU shaders, and IndexedDB when opening directly via <code>file://</code> for security.<br>' +
+                  'Please serve this directory over local HTTP to run on-device.' +
+                '</p>' +
+                '<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:12px;text-align:left;font-family:monospace;font-size:12px;margin-bottom:16px;">' +
+                  '<div style="color:var(--fg-muted,#888);margin-bottom:6px;"># Run in your terminal in this directory:</div>' +
+                  '<div style="color:#a8ff60;font-weight:bold;user-select:all;">python3 -m http.server 8000</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">' +
+                  '<a href="http://localhost:8000" class="btn primary" style="padding:8px 18px;text-decoration:none;border-radius:6px;background:#c4b18a;color:#0a0a0b;font-weight:600;">Open http://localhost:8000</a>' +
+                  '<a href="https://stateofutopia.com/experiments/microllmlab" class="btn" style="padding:8px 18px;text-decoration:none;border-radius:6px;background:rgba(255,255,255,0.1);color:#fff;">Try Hosted Version</a>' +
+                '</div>';
+            }
+          }
+          if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", showFileNotice);
+          } else {
+            showFileNotice();
+          }
+        }
+        setTimeout(function() {
+          var loader = document.getElementById("app-loader");
+          if (loader && loader.style.opacity !== "0" && location.protocol !== "file:") {
+            console.warn("[MicroLLM lab] App loader failsafe triggered after 6s");
+            loader.style.opacity = "0";
+            setTimeout(function() { if (loader.parentNode) loader.parentNode.removeChild(loader); }, 350);
+          }
+        }, 6000);
+      })();
+    </script>
 
     <div class="app">
       <header class="top">
