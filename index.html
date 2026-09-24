@@ -12,39 +12,99 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- Initial Loading Overlay to prevent partial paints -->
+    <div id="app-loader" class="app-loader" aria-live="polite">
+      <div class="loader-box">
+        <div class="loader-spinner" aria-hidden="true"></div>
+        <h2 class="loader-title">Loading MicroLLM lab…</h2>
+        <p class="loader-msg" id="loader-msg">Initializing WebGPU engine & model catalog…</p>
+      </div>
+    </div>
+
     <div class="app">
       <header class="top">
         <div class="brand">
+          <div class="brand-badge-row">
+            <span class="brand-tag">On-Device AI Lab</span>
+            <span class="brand-tag sub">WebGPU · Zero-Server · Q4 Quantized</span>
+          </div>
           <h1>MicroLLM lab</h1>
-          <p>
-            Small language models, Q4, running on <em>this</em> GPU — no server, no account.
-            WebGPU (Safari / Apple Silicon included). Pick a model at the top, then chat
-            or run the suite — Compare charts speed and accuracy.
+          <p class="tagline">
+            Run, benchmark, and compare <strong>Small Language Models (SLMs)</strong> directly in your browser with hardware-accelerated <strong>WebGPU</strong> — 100% private, zero server cost, zero accounts.
           </p>
-          <p class="hero-links">
-            <a class="btn primary" href="https://stateofutopia.com/experiments/microllmlab">Try it live</a>
-            <a class="btn" href="https://stateofutopia.com/experiments/microllmlab/current.zip">Download zip (591 MB)</a>
-            <a class="btn" href="https://github.com/robss2020/microllm-lab">GitHub</a>
-          </p>
+
+          <!-- Why Small Models Matter & Technical Primer -->
+          <div class="intro-grid">
+            <div class="intro-card">
+              <h3>🎯 Why Small Language Models?</h3>
+              <p>
+                Frontier models (GPT-4, Claude) cost millions to serve and add network latency. Compact models (25M–360M) operate as an ultra-fast, efficient edge layer:
+              </p>
+              <ul>
+                <li><strong>Edge Computing & Privacy:</strong> Runs entirely on your phone or laptop. No prompt or user data ever leaves your device.</li>
+                <li><strong>Fast Triage & Task Routing:</strong> Classify queries, filter spam, and extract intent in milliseconds to decide if an expensive cloud LLM is even needed.</li>
+                <li><strong>Zero Cloud Cost:</strong> Infinite concurrency powered by client GPUs with no API bills.</li>
+                <li><strong>Ultra-Low Latency:</strong> Sub-10ms time-to-first-token for instantaneous autocomplete and real-time agents.</li>
+              </ul>
+            </div>
+
+            <div class="intro-card">
+              <h3>🔍 Technical Vocabulary</h3>
+              <dl class="vocab-list">
+                <dt>Small Language Model (SLM)</dt>
+                <dd>A compact neural model (~25M–360M parameters) designed for efficient edge intelligence and specific tasks rather than broad trivia.</dd>
+                <dt>Q4 (4-bit Quantization)</dt>
+                <dd>Compressing weights from 16-bit floats to 4 bits per parameter, shrinking memory footprint by 75% so 100M+ models fit in ~50–84 MB of browser memory with near-lossless generation quality.</dd>
+                <dt>WebGPU</dt>
+                <dd>The modern W3C standard API that executes compute shaders directly on your hardware GPU (Apple Silicon Metal, DirectX 12, Vulkan) right inside your browser window.</dd>
+              </dl>
+            </div>
+          </div>
+
+          <!-- 3-Step Quickstart Guide -->
+          <div class="quickstart-bar">
+            <div class="quickstart-title">How to use this lab in 3 steps:</div>
+            <div class="quickstart-steps">
+              <div class="qs-step">
+                <span class="qs-num">1</span>
+                <div><strong>Load a model:</strong> Click <em>Load</em> on any model card below. It caches directly into your browser's private IndexedDB (no file download to disk).</div>
+              </div>
+              <div class="qs-step">
+                <span class="qs-num">2</span>
+                <div><strong>Chat on-device:</strong> Select your loaded model and scroll down to the <em>Chat</em> panel to test prompts and watch live tok/s speed.</div>
+              </div>
+              <div class="qs-step">
+                <span class="qs-num">3</span>
+                <div><strong>Benchmark & Compare:</strong> Switch to the <em>Benchmarks</em> tab to run objective speed/accuracy tests and generate your shareable performance certificate.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-links">
+            <button type="button" class="btn primary" id="btn-get-started">Load any of the models below to get started ↓</button>
+            <a class="btn" href="https://stateofutopia.com/experiments/microllmlab/current.zip">Download zip (589 MB)</a>
+            <a class="btn" href="https://github.com/robss2020/microllm-lab" target="_blank" rel="noopener">GitHub</a>
+          </div>
         </div>
+
         <nav class="tabs" role="tablist">
           <button type="button" data-tab="chat" aria-selected="true">Chat</button>
           <button type="button" data-tab="bench">Benchmarks</button>
-          <button type="button" data-tab="compare">Compare</button>
+          <button type="button" data-tab="compare">Compare & Certificate</button>
           <button type="button" data-tab="studio">Custom eval</button>
         </nav>
       </header>
 
       <aside id="webgpu-notice" class="webgpu-notice" hidden aria-live="polite"></aside>
 
-      <section class="model-bar" aria-label="Model picker">
+      <section class="model-bar" id="model-bar" aria-label="Model picker">
         <div class="model-bar-row">
           <label class="model-select-label" for="active-dtype">Active model</label>
           <select id="active-dtype"></select>
-          <p class="idb-total" id="idb-total">Stored on this device: …</p>
+          <p class="idb-total" id="idb-total">Loaded on this device: … (Saved in browser IndexedDB cache)</p>
           <div class="model-bar-actions">
-            <button type="button" class="btn" id="dl-all">Download all</button>
-            <button type="button" class="btn ghost" id="ds-all">Discard all</button>
+            <button type="button" class="btn" id="dl-all">Load all models</button>
+            <button type="button" class="btn ghost" id="ds-all">Unload all</button>
           </div>
         </div>
         <div class="model-cards" id="model-cards" role="listbox" aria-label="Available models"></div>
@@ -76,8 +136,34 @@
             <p id="bench-estimate" class="muted"></p>
             <div class="row">
               <button class="btn primary" id="run-builtin" data-busy>Run suite on active model</button>
-              <button class="btn" id="run-all" data-busy>Run suite on every downloaded model</button>
+              <button class="btn" id="run-all" data-busy>Run suite on every loaded model</button>
+              <button class="btn" id="run-sustained" data-busy>Run sustained speed test (256 tokens)</button>
             </div>
+
+            <!-- Scoreboard Summary Banner -->
+            <div class="bench-summary-banner" id="bench-summary-banner">
+              <div class="summary-metric">
+                <span class="metric-label">🏎️ Highest Peak Speed</span>
+                <b class="metric-val" id="bench-sum-peak">—</b>
+                <span class="metric-sub">Fastest single test</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">⚡ Highest Sustained Speed</span>
+                <b class="metric-val" id="bench-sum-sustained">—</b>
+                <span class="metric-sub">Continuous 256-tok decode</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">📊 Avg Sustained Speed</span>
+                <b class="metric-val" id="bench-sum-avg">—</b>
+                <span class="metric-sub">Across tested models</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">⏱️ Total Benchmark Score</span>
+                <b class="metric-val" id="bench-sum-wall">—</b>
+                <span class="metric-sub">Cumulative suite wall time</span>
+              </div>
+            </div>
+
             <div class="charts" id="bench-charts" hidden>
               <div class="chart-card">
                 <h3>Runtime per test (ms)</h3>
@@ -93,9 +179,34 @@
 
           <section id="panel-compare" class="panel">
             <p>
-              Speed (tokens/s, suite wall) and accuracy (pass rate on the objective suite) from runs
+              Speed (tokens/s, sustained decode, suite wall) and accuracy (pass rate on objective tests) from runs
               in this browser. Numbers stay on this machine. Charts use the latest suite per model.
             </p>
+
+            <!-- Scoreboard Summary Banner -->
+            <div class="bench-summary-banner" id="compare-summary-banner">
+              <div class="summary-metric">
+                <span class="metric-label">🏎️ Highest Peak Speed</span>
+                <b class="metric-val" id="cmp-sum-peak">—</b>
+                <span class="metric-sub">Fastest single test</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">⚡ Highest Sustained Speed</span>
+                <b class="metric-val" id="cmp-sum-sustained">—</b>
+                <span class="metric-sub">Continuous 256-tok decode</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">📊 Avg Sustained Speed</span>
+                <b class="metric-val" id="cmp-sum-avg">—</b>
+                <span class="metric-sub">Across loaded models</span>
+              </div>
+              <div class="summary-metric">
+                <span class="metric-label">⏱️ Total Benchmark Score</span>
+                <b class="metric-val" id="cmp-sum-wall">—</b>
+                <span class="metric-sub">Total execution wall time</span>
+              </div>
+            </div>
+
             <div class="charts" id="compare-charts" hidden>
               <div class="chart-card">
                 <h3>Accuracy (latest suite)</h3>
@@ -113,6 +224,47 @@
             <div id="compare-table"></div>
             <div class="row">
               <button class="btn" id="clear-compare">Clear saved comparison</button>
+            </div>
+
+            <!-- Verified Benchmark Certificate & Share Section -->
+            <div class="cert-section" id="cert-section">
+              <div class="cert-header">
+                <div class="cert-header-icon" aria-hidden="true">🏆</div>
+                <div>
+                  <h3>Verified Benchmark Certificate & Social Share</h3>
+                  <p class="muted">Generate and download a verifiable performance certificate with your device hardware, peak and sustained tokens/second, and share your score.</p>
+                </div>
+              </div>
+
+              <div class="cert-controls-grid">
+                <div class="cert-field">
+                  <label for="cert-user-name">Your Name or Handle</label>
+                  <input type="text" id="cert-user-name" value="WebGPU Explorer" placeholder="Enter your name or handle" />
+                </div>
+                <div class="cert-field">
+                  <label for="cert-device-info">Device & Hardware Information</label>
+                  <input type="text" id="cert-device-info" placeholder="Auto-detected GPU / Device (editable)" />
+                </div>
+                <div class="cert-field cert-btn-field">
+                  <button type="button" class="btn primary" id="btn-generate-cert">🎨 Generate Certificate</button>
+                </div>
+              </div>
+
+              <div class="cert-display-card" id="cert-display-card">
+                <div class="cert-canvas-wrap">
+                  <canvas id="cert-canvas" width="1200" height="675" style="display:none;"></canvas>
+                  <img id="cert-preview-img" alt="MicroLLM Lab Benchmark Certificate" class="cert-preview-img" />
+                </div>
+
+                <div class="cert-actions-row">
+                  <button type="button" class="btn primary" id="btn-download-cert">⬇️ Download Certificate Image (.png)</button>
+                  <button type="button" class="btn" id="btn-copy-cert-img">📋 Copy Image</button>
+                  <button type="button" class="btn" id="btn-share-x">𝕏 Share on X</button>
+                  <button type="button" class="btn" id="btn-share-linkedin">💼 Share on LinkedIn</button>
+                  <button type="button" class="btn" id="btn-copy-summary">🔗 Copy Text Summary</button>
+                </div>
+                <p id="cert-status-msg" class="cert-status-msg"></p>
+              </div>
             </div>
           </section>
 

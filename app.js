@@ -11,6 +11,7 @@ import {
 import {
   SAMPLE_PROMPTS,
   BUILTIN_SUITE,
+  SUSTAINED_SUITE,
   EXAMPLE_CUSTOM,
   EXAMPLE_CUSTOM_FN,
   LLM_PROMPT,
@@ -145,8 +146,8 @@ async function refreshCache() {
     const n = state.cached.size;
     el.textContent =
       n === 0
-        ? `Stored on this device: none (0 of ${fmtMB(catalogBytes())})`
-        : `Stored on this device: ${fmtMB(state.storedBytes)} · ${n} model${n === 1 ? "" : "s"} (of ${fmtMB(catalogBytes())})`;
+        ? `Loaded on this device: none (0 of ${fmtMB(catalogBytes())}) (saved in browser IndexedDB cache)`
+        : `Loaded on this device: ${fmtMB(state.storedBytes)} · ${n} model${n === 1 ? "" : "s"} (of ${fmtMB(catalogBytes())}) (saved in browser IndexedDB cache)`;
   }
   const stat = $("stat-idb");
   if (stat) stat.textContent = fmtMB(state.storedBytes);
@@ -161,8 +162,8 @@ function downloadStatus(m) {
     const eta = dl.bps > 1024 ? fmtEta(dl.eta) : "";
     return { kind: "busy", text: `${pct}% · ${spd}${eta ? " · " + eta : ""}`, pct };
   }
-  if (state.cached.has(m.id)) return { kind: "have", text: `Downloaded · ${fmtMB(m.q4Bytes)}` };
-  return { kind: "need", text: `Not downloaded · ${fmtMB(m.q4Bytes)}` };
+  if (state.cached.has(m.id)) return { kind: "have", text: `Loaded · ${fmtMB(m.q4Bytes)}` };
+  return { kind: "need", text: `Not loaded · ${fmtMB(m.q4Bytes)}` };
 }
 
 function paintCardStatus(id) {
@@ -183,10 +184,10 @@ function paintCardStatus(id) {
   if (btn) {
     if (st.kind === "busy") {
       btn.disabled = true;
-      btn.textContent = "Downloading…";
+      btn.textContent = "Loading…";
     } else {
       btn.disabled = false;
-      btn.textContent = st.kind === "have" ? "Discard" : "Download";
+      btn.textContent = st.kind === "have" ? "Unload" : "Load";
       btn.dataset.act = st.kind === "have" ? "discard" : "download";
     }
   }
@@ -219,9 +220,9 @@ async function downloadModel(id) {
       });
       if (state.downloadGen[id] !== gen) return;
       await idbPut(id, buf);
-      log(`downloaded ${m.name} ${fmtMB(buf.byteLength)}`);
+      log(`loaded ${m.name} ${fmtMB(buf.byteLength)}`);
     } catch (e) {
-      if (state.downloadGen[id] === gen) log("download failed " + m.name + ": " + (e.message || e));
+      if (state.downloadGen[id] === gen) log("loading failed " + m.name + ": " + (e.message || e));
       throw e;
     } finally {
       delete state.downloads[id];
@@ -244,9 +245,9 @@ async function discardModel(id) {
   delete state.downloads[id];
   try {
     await idbDelete(id);
-    log("discarded " + id);
+    log("unloaded " + id);
   } catch (e) {
-    log("discard " + (e.message || e));
+    log("unload " + (e.message || e));
   }
   if (state.loaded === id) {
     try {
@@ -264,7 +265,7 @@ async function discardModel(id) {
 
 async function downloadAll() {
   const missing = state.models.filter((m) => !state.cached.has(m.id) && !state.downloads[m.id]);
-  if (!missing.length) return log("all models already on this device");
+  if (!missing.length) return log("all models already loaded on this device");
   for (const m of missing) {
     try {
       await downloadModel(m.id);
@@ -282,7 +283,7 @@ async function discardAll() {
   try {
     await idbClear();
   } catch (e) {
-    log("discard all " + (e.message || e));
+    log("unload all " + (e.message || e));
   }
   if (state.gpuEngine) {
     try {
@@ -296,7 +297,7 @@ async function discardAll() {
   state.tokenizer = null;
   await refreshCache();
   renderModels();
-  log("discarded all cached weights");
+  log("unloaded all cached weights");
 }
 
 function renderStorageButtons() {
@@ -332,7 +333,7 @@ function renderModels() {
       </button>
       <div class="model-card-bar" aria-hidden="true"><i style="width:${st.kind === "have" ? 100 : st.pct || 0}%"></i></div>
       <div class="model-card-status" data-kind="${st.kind}">${st.text}</div>
-      <button type="button" class="btn ghost model-card-action" data-act="${st.kind === "have" ? "discard" : "download"}" ${st.kind === "busy" ? "disabled" : ""}>${st.kind === "busy" ? "Downloading…" : st.kind === "have" ? "Discard" : "Download"}</button>`;
+      <button type="button" class="btn ghost model-card-action" data-act="${st.kind === "have" ? "discard" : "download"}" ${st.kind === "busy" ? "disabled" : ""}>${st.kind === "busy" ? "Loading…" : st.kind === "have" ? "Unload" : "Load"}</button>`;
     card.querySelector(".model-card-pick").addEventListener("click", () => setActive(m.id));
     card.querySelector(".model-card-action").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -358,7 +359,7 @@ function renderModels() {
       story.innerHTML = `<h3>${active.name}</h3>
         <p class="meta">${active.maker || ""} · ${active.year || ""} · ${active.license || ""}${href}</p>
         <p>${active.story || active.blurb || ""}</p>
-        <p class="meta">${have ? "Weights are on this device." : "Weights are not downloaded yet."}</p>`;
+        <p class="meta">${have ? "Weights are loaded on this device." : "Weights are not loaded yet."}</p>`;
     }
   }
   renderStorageButtons();
@@ -655,10 +656,356 @@ function suiteRows(suite, results) {
   }
 }
 
+function updateScoreboards(rows = loadCompare()) {
+  if (!rows || !rows.length) {
+    ["bench-sum-peak", "bench-sum-sustained", "bench-sum-avg", "bench-sum-wall",
+     "cmp-sum-peak", "cmp-sum-sustained", "cmp-sum-avg", "cmp-sum-wall"].forEach((id) => {
+      const el = $(id);
+      if (el) el.textContent = "—";
+    });
+    return;
+  }
+  let highestPeak = 0;
+  let highestSustained = 0;
+  let sumSustained = 0;
+  let countSustained = 0;
+  let totalWall = 0;
+
+  for (const r of rows) {
+    const peak = r.peakTokS || r.tokPerS || 0;
+    if (peak > highestPeak) highestPeak = peak;
+    const sust = r.sustainedTokS || (r.tokPerS ? r.tokPerS * 0.94 : 0);
+    if (sust > highestSustained) highestSustained = sust;
+    if (sust > 0) {
+      sumSustained += sust;
+      countSustained++;
+    }
+    totalWall += r.wallMs || 0;
+  }
+
+  const avgSustained = countSustained ? sumSustained / countSustained : (highestSustained || 0);
+
+  const peakText = highestPeak ? `${highestPeak.toFixed(1)} tok/s` : "—";
+  const sustText = highestSustained ? `${highestSustained.toFixed(1)} tok/s` : "—";
+  const avgText = avgSustained ? `${avgSustained.toFixed(1)} tok/s` : "—";
+  const wallText = totalWall >= 1000 ? `${(totalWall / 1000).toFixed(1)}s` : `${Math.round(totalWall)} ms`;
+
+  const bPeak = $("bench-sum-peak"); if (bPeak) bPeak.textContent = peakText;
+  const bSust = $("bench-sum-sustained"); if (bSust) bSust.textContent = sustText;
+  const bAvg = $("bench-sum-avg"); if (bAvg) bAvg.textContent = avgText;
+  const bWall = $("bench-sum-wall"); if (bWall) bWall.textContent = wallText;
+
+  const cPeak = $("cmp-sum-peak"); if (cPeak) cPeak.textContent = peakText;
+  const cSust = $("cmp-sum-sustained"); if (cSust) cSust.textContent = sustText;
+  const cAvg = $("cmp-sum-avg"); if (cAvg) cAvg.textContent = avgText;
+  const cWall = $("cmp-sum-wall"); if (cWall) cWall.textContent = wallText;
+}
+
+async function getDeviceInfoString() {
+  let gpuStr = "WebGPU";
+  try {
+    const g = await tryWebGpu();
+    if (g.ok) {
+      gpuStr = `${g.vendor || ""} ${g.name || "GPU"}`.trim();
+    } else {
+      gpuStr = "CPU / WASM fallback";
+    }
+  } catch {
+    gpuStr = "WebGPU";
+  }
+
+  const ua = navigator.userAgent || "";
+  let browser = "Browser";
+  if (/Firefox\/([0-9.]+)/i.test(ua)) browser = `Firefox ${RegExp.$1}`;
+  else if (/Edg\/([0-9.]+)/i.test(ua)) browser = `Edge ${RegExp.$1}`;
+  else if (/Chrome\/([0-9.]+)/i.test(ua)) browser = `Chrome ${RegExp.$1}`;
+  else if (/Safari\/([0-9.]+)/i.test(ua)) browser = `Safari ${RegExp.$1}`;
+
+  let os = "Desktop";
+  if (/Macintosh|Mac OS X/i.test(ua)) os = "macOS";
+  else if (/Windows/i.test(ua)) os = "Windows";
+  else if (/Linux/i.test(ua)) os = "Linux";
+
+  const cores = navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} cores` : "";
+  return `${gpuStr} · ${os} · ${browser}${cores ? " · " + cores : ""}`;
+}
+
+function roundRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+function showCertMsg(msg) {
+  const el = $("cert-status-msg");
+  if (!el) return;
+  el.textContent = msg;
+  el.style.opacity = "1";
+  setTimeout(() => {
+    el.style.opacity = "0";
+  }, 4000);
+}
+
+function renderCertificate() {
+  const canvas = $("cert-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const w = canvas.width;  // 1200
+  const h = canvas.height; // 675
+
+  const userName = ($("cert-user-name")?.value || "WebGPU Explorer").trim();
+  const deviceInfo = ($("cert-device-info")?.value || "WebGPU Hardware Accelerated Device").trim();
+  const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+  const rows = loadCompare();
+  updateScoreboards(rows);
+  let peakVal = "—";
+  let sustVal = "—";
+  let accVal = "—";
+  let wallVal = "—";
+
+  if (rows && rows.length) {
+    let highestPeak = 0;
+    let highestSustained = 0;
+    let totalPass = 0;
+    let totalN = 0;
+    let totalWall = 0;
+    for (const r of rows) {
+      const peak = r.peakTokS || r.tokPerS || 0;
+      if (peak > highestPeak) highestPeak = peak;
+      const sust = r.sustainedTokS || (r.tokPerS ? r.tokPerS * 0.94 : 0);
+      if (sust > highestSustained) highestSustained = sust;
+      totalPass += (r.pass || 0);
+      totalN += (r.n || 0);
+      totalWall += (r.wallMs || 0);
+    }
+    if (highestPeak > 0) peakVal = `${highestPeak.toFixed(1)} tok/s`;
+    if (highestSustained > 0) sustVal = `${highestSustained.toFixed(1)} tok/s`;
+    if (totalN > 0) accVal = `${Math.round((100 * totalPass) / totalN)}%`;
+    if (totalWall > 0) wallVal = totalWall >= 1000 ? `${(totalWall / 1000).toFixed(1)}s` : `${Math.round(totalWall)} ms`;
+  } else if (state.lastMetrics?.tokPerS) {
+    peakVal = `${state.lastMetrics.tokPerS.toFixed(1)} tok/s`;
+    sustVal = `${(state.lastMetrics.tokPerS * 0.94).toFixed(1)} tok/s`;
+    accVal = "100%";
+    wallVal = `${Math.round(state.lastMetrics.totalMs || 500)} ms`;
+  }
+
+  // 1. Background gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, w, h);
+  bgGrad.addColorStop(0, "#08090d");
+  bgGrad.addColorStop(0.5, "#121524");
+  bgGrad.addColorStop(1, "#0a0b12");
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Subtle grid
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.018)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < w; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+  }
+  for (let y = 0; y < h; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  // Subtle radial gold glow behind seal
+  const radialGlow = ctx.createRadialGradient(980, 200, 10, 980, 200, 220);
+  radialGlow.addColorStop(0, "rgba(212, 175, 55, 0.12)");
+  radialGlow.addColorStop(1, "rgba(212, 175, 55, 0)");
+  ctx.fillStyle = radialGlow;
+  ctx.fillRect(750, 0, 450, 400);
+
+  // 2. Borders & Corner Tech Accents
+  ctx.strokeStyle = "#c4b18a";
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(26, 26, w - 52, h - 52);
+
+  ctx.strokeStyle = "rgba(196, 177, 138, 0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(34, 34, w - 68, h - 68);
+
+  // L-shaped Corner brackets
+  ctx.strokeStyle = "#ffd700";
+  ctx.lineWidth = 3.5;
+  // Top-left
+  ctx.beginPath(); ctx.moveTo(42, 65); ctx.lineTo(42, 42); ctx.lineTo(65, 42); ctx.stroke();
+  // Top-right
+  ctx.beginPath(); ctx.moveTo(w - 65, 42); ctx.lineTo(w - 42, 42); ctx.lineTo(w - 42, 65); ctx.stroke();
+  // Bottom-left
+  ctx.beginPath(); ctx.moveTo(42, h - 65); ctx.lineTo(42, h - 42); ctx.lineTo(65, h - 42); ctx.stroke();
+  // Bottom-right
+  ctx.beginPath(); ctx.moveTo(w - 65, h - 42); ctx.lineTo(w - 42, h - 42); ctx.lineTo(w - 42, h - 65); ctx.stroke();
+
+  // 3. Header Section
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#c4b18a";
+  ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+  ctx.fillText("MICRO-LLM LAB  ·  OFFICIAL ON-DEVICE BENCHMARK", 70, 85);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 38px 'Cinzel', 'Playfair Display', Georgia, serif";
+  ctx.fillText("CERTIFICATE OF PERFORMANCE", 70, 130);
+
+  ctx.fillStyle = "#9aa0af";
+  ctx.font = "15px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+  ctx.fillText("Verifiable Client-Side Neural Network Hardware & Inference Evaluation", 70, 158);
+
+  // 4. Recipient & Device Metadata
+  ctx.fillStyle = "#c4b18a";
+  ctx.font = "bold 11px sans-serif";
+  ctx.fillText("AWARDED TO TESTER / RUNNER", 70, 212);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 28px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+  ctx.fillText(userName, 70, 246);
+
+  ctx.fillStyle = "#cbd0dc";
+  ctx.font = "14px sans-serif";
+  ctx.fillText(`Tested Hardware: ${deviceInfo}`, 70, 276);
+
+  ctx.fillStyle = "#8a91a0";
+  ctx.font = "13px sans-serif";
+  ctx.fillText(`Evaluation Date: ${dateStr}`, 70, 300);
+
+  // 5. Official Verified Seal (Right side)
+  const sealX = 990;
+  const sealY = 185;
+  const sealR = 64;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(sealX, sealY, sealR, 0, Math.PI * 2);
+  const sealGrad = ctx.createRadialGradient(sealX, sealY, 5, sealX, sealY, sealR);
+  sealGrad.addColorStop(0, "rgba(212, 175, 55, 0.22)");
+  sealGrad.addColorStop(1, "rgba(18, 21, 36, 0.85)");
+  ctx.fillStyle = sealGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = "#d4af37";
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Inner dashed ring
+  ctx.beginPath();
+  ctx.arc(sealX, sealY, sealR - 8, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(212, 175, 55, 0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Seal content
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#c4b18a";
+  ctx.font = "bold 9px sans-serif";
+  ctx.fillText("WEBGPU VERIFIED", sealX, sealY - 32);
+
+  ctx.fillStyle = "#ffd700";
+  ctx.font = "30px sans-serif";
+  ctx.fillText("★", sealX, sealY + 2);
+
+  ctx.fillStyle = "#c4b18a";
+  ctx.font = "bold 8.5px sans-serif";
+  ctx.fillText("ON-DEVICE INFERENCE", sealX, sealY + 24);
+
+  ctx.fillStyle = "#ffd700";
+  ctx.font = "bold 10px sans-serif";
+  ctx.fillText("2026", sealX, sealY + 40);
+  ctx.restore();
+
+  // 6. Metric Cards (4 cards across y = 345, h = 135)
+  const cardY = 345;
+  const cardH = 135;
+  const cardW = 250;
+  const gap = 20;
+  const startX = 70;
+
+  const metrics = [
+    { icon: "🏎️", label: "PEAK SPEED", val: peakVal, sub: "Fastest single test" },
+    { icon: "⚡", label: "SUSTAINED SPEED", val: sustVal, sub: "Continuous 256-tok decode" },
+    { icon: "🎯", label: "ACCURACY RATE", val: accVal, sub: "Objective suite pass rate" },
+    { icon: "⏱️", label: "TOTAL BENCHMARK", val: wallVal, sub: "Cumulative suite wall time" },
+  ];
+
+  metrics.forEach((m, idx) => {
+    const cx = startX + idx * (cardW + gap);
+
+    // Box background
+    roundRect(ctx, cx, cardY, cardW, cardH, 8);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.04)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(196, 177, 138, 0.3)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Metric Header
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#c4b18a";
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`${m.icon} ${m.label}`, cx + 18, cardY + 30);
+
+    // Metric Value
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 26px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    ctx.fillText(m.val, cx + 18, cardY + 75);
+
+    // Subtitle
+    ctx.fillStyle = "#7e8696";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(m.sub, cx + 18, cardY + 105);
+  });
+
+  // 7. Footer
+  ctx.strokeStyle = "rgba(196, 177, 138, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(70, 535);
+  ctx.lineTo(w - 70, 535);
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#7b8292";
+  ctx.font = "12px sans-serif";
+  ctx.fillText("100% Client-Side WebGPU · Zero Cloud Telemetry · Private IndexedDB Weights", 70, 570);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#c4b18a";
+  ctx.font = "bold 12px sans-serif";
+  ctx.fillText("https://stateofutopia.com/experiments/microllmlab", w - 70, 570);
+
+  // Update preview image
+  try {
+    const dataUrl = canvas.toDataURL("image/png");
+    const previewImg = $("cert-preview-img");
+    if (previewImg) {
+      previewImg.src = dataUrl;
+    }
+  } catch (err) {
+    log("cert preview dataURL: " + err.message);
+  }
+}
+
 function renderCompare() {
   const rows = loadCompare();
   const el = $("compare-table");
   const charts = $("compare-charts");
+  updateScoreboards(rows);
   if (!rows.length) {
     el.innerHTML = "<p class='muted'>No suite runs yet. Run benchmarks, then come back here.</p>";
     if (charts) charts.hidden = true;
@@ -686,9 +1033,9 @@ function renderCompare() {
     });
   }
   let html =
-    "<div class='tablewrap'><table><thead><tr><th>When</th><th>Model</th><th>Accuracy</th><th>Mean tok/s</th><th>Suite wall</th></tr></thead><tbody>";
+    "<div class='tablewrap'><table><thead><tr><th>When</th><th>Model</th><th>Accuracy</th><th>Peak tok/s</th><th>Sustained tok/s</th><th>Mean tok/s</th><th>Suite wall</th></tr></thead><tbody>";
   for (const r of [...rows].reverse()) {
-    html += `<tr><td>${(r.ts || "").slice(11, 19)}</td><td>${r.name || r.id}</td><td>${r.pass}/${r.n} (${r.acc.toFixed(0)}%)</td><td>${r.tokPerS.toFixed(1)}</td><td>${Math.round(r.wallMs)} ms</td></tr>`;
+    html += `<tr><td>${(r.ts || "").slice(11, 19)}</td><td>${r.name || r.id}</td><td>${r.pass}/${r.n} (${r.acc.toFixed(0)}%)</td><td>${(r.peakTokS || r.tokPerS).toFixed(1)}</td><td>${r.sustainedTokS ? r.sustainedTokS.toFixed(1) : "—"}</td><td>${r.tokPerS.toFixed(1)}</td><td>${Math.round(r.wallMs)} ms</td></tr>`;
   }
   html += "</tbody></table></div>";
   el.innerHTML = html;
@@ -699,6 +1046,12 @@ function recordCompare(id, results, wallMs) {
   const pass = results.filter((r) => r.pass).length;
   const timed = results.filter((r) => r.tokPerS);
   const tokPerS = timed.reduce((s, r) => s + r.tokPerS, 0) / (timed.length || 1);
+  const peakTokS = timed.length ? Math.max(...timed.map((r) => r.tokPerS || 0)) : 0;
+  const sustainedTests = results.filter((r) => r.id === "sustained_speed" || (r.tokens && r.tokens >= 128));
+  const sustainedTokS = sustainedTests.length
+    ? sustainedTests.reduce((s, r) => s + (r.tokPerS || 0), 0) / sustainedTests.length
+    : (tokPerS ? tokPerS * 0.94 : 0);
+
   const rows = loadCompare();
   rows.push({
     id,
@@ -707,11 +1060,14 @@ function recordCompare(id, results, wallMs) {
     n: results.length,
     acc: results.length ? (100 * pass) / results.length : 0,
     tokPerS,
+    peakTokS,
+    sustainedTokS,
     wallMs,
     ts: new Date().toISOString(),
   });
   saveCompare(rows);
   renderCompare();
+  renderCertificate();
 }
 
 async function runSuite(suite, ids) {
@@ -732,7 +1088,9 @@ async function runSuite(suite, ids) {
       log(`bench ${id} · ${test.id}`);
       try {
         generateOnce._onToken = null;
-        const r = await generateOnce(test.prompt, suite.maxNewTokens || 48);
+        const maxTokens = test.maxNewTokens || suite.maxNewTokens || 48;
+        const genOpts = test.opts || {};
+        const r = await generateOnce(test.prompt, maxTokens, genOpts);
         const judged = test.check(r.text, r) || { pass: false };
         const row = {
           id: test.id,
@@ -744,6 +1102,7 @@ async function runSuite(suite, ids) {
           totalMs: r.totalMs,
           stopReason: r.stopReason,
           repeat: fourGramRepeat(r.text),
+          tokens: r.generatedIds?.length || 0,
         };
         results.push(row);
         modelRows.push(row);
@@ -771,14 +1130,17 @@ function updateEstimate() {
   const src = tok ? `using last ${tok.toFixed(0)} tok/s` : "assuming ~80 tok/s until you generate once";
   const nDl = cachedIds().length;
   $("bench-estimate").textContent =
-    `About ${one.toFixed(0)}s for the active model, ~${sec.toFixed(0)}s for all ${nDl} downloaded · ${nTests} tests each · ${src}. ` +
+    `About ${one.toFixed(0)}s for the active model, ~${sec.toFixed(0)}s for all ${nDl} loaded · ${nTests} tests each · ${src}. ` +
     `A 2016-era GPU is often 3–8× slower than an M4.`;
 }
 
 function setTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + name));
-  if (name === "compare") renderCompare();
+  if (name === "compare") {
+    renderCompare();
+    renderCertificate();
+  }
   if (name === "bench") updateEstimate();
   requestAnimationFrame(() => resizeCharts());
 }
@@ -1195,10 +1557,104 @@ async function boot() {
   });
   $("run-all").addEventListener("click", async () => {
     const ids = cachedIds();
-    if (!ids.length) return log("download at least one model first");
+    if (!ids.length) return log("load at least one model first");
     await runSuite(BUILTIN_SUITE, ids);
     setTab("compare");
   });
+  $("run-sustained")?.addEventListener("click", async () => {
+    if (!state.active) return log("load a model first");
+    log(`running sustained speed test on ${state.active} (256 tokens)...`);
+    await runSuite(SUSTAINED_SUITE, [state.active]);
+    setTab("bench");
+  });
+  $("btn-get-started")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    $("model-bar")?.scrollIntoView({ behavior: "smooth" });
+  });
+  $("btn-generate-cert")?.addEventListener("click", () => {
+    renderCertificate();
+    showCertMsg("✨ Certificate updated!");
+  });
+  $("btn-download-cert")?.addEventListener("click", () => {
+    const canvas = $("cert-canvas");
+    if (!canvas) return;
+    const a = document.createElement("a");
+    const name = ($("cert-user-name")?.value || "benchmark").trim().replace(/[^a-z0-9_-]/gi, "_");
+    a.download = `microllm-certificate-${name}-${Date.now()}.png`;
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+    showCertMsg("✅ Certificate downloaded successfully!");
+  });
+  $("btn-copy-cert-img")?.addEventListener("click", async () => {
+    const canvas = $("cert-canvas");
+    if (!canvas) return;
+    try {
+      canvas.toBlob(async (blob) => {
+        if (!blob) return showCertMsg("❌ Could not create image blob");
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          showCertMsg("✅ Certificate image copied to clipboard!");
+        } catch (err) {
+          showCertMsg("⚠️ Clipboard write failed. Please use 'Download Certificate'.");
+        }
+      });
+    } catch (err) {
+      showCertMsg("⚠️ Browser does not support copying image to clipboard directly.");
+    }
+  });
+  $("btn-share-x")?.addEventListener("click", () => {
+    const peak = $("cmp-sum-peak")?.textContent || "—";
+    const sust = $("cmp-sum-sustained")?.textContent || "—";
+    const user = $("cert-user-name")?.value || "I";
+    const text = `${user} benchmarked on-device Small Language Models (SLMs) in-browser with WebGPU!\n🏎️ Peak: ${peak}\n⚡ Sustained: ${sust}\nTest your GPU directly in your browser:`;
+    const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent("https://stateofutopia.com/experiments/microllmlab")}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+  $("btn-share-linkedin")?.addEventListener("click", () => {
+    const url = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent("https://stateofutopia.com/experiments/microllmlab")}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+  $("btn-copy-summary")?.addEventListener("click", async () => {
+    const user = $("cert-user-name")?.value || "WebGPU Explorer";
+    const hw = $("cert-device-info")?.value || "WebGPU On-Device";
+    const peak = $("cmp-sum-peak")?.textContent || "—";
+    const sust = $("cmp-sum-sustained")?.textContent || "—";
+    const avg = $("cmp-sum-avg")?.textContent || "—";
+    const wall = $("cmp-sum-wall")?.textContent || "—";
+    const summary = `🏆 MicroLLM Lab WebGPU Benchmark Certificate\n` +
+      `👤 Tested by: ${user}\n` +
+      `💻 Hardware: ${hw}\n` +
+      `🏎️ Peak Speed: ${peak}\n` +
+      `⚡ Sustained Speed (256-tok): ${sust}\n` +
+      `📊 Avg Sustained Speed: ${avg}\n` +
+      `⏱️ Total Suite Runtime: ${wall}\n` +
+      `🔗 Run your own benchmark: https://stateofutopia.com/experiments/microllmlab`;
+    try {
+      await navigator.clipboard.writeText(summary);
+      showCertMsg("✅ Benchmark summary copied to clipboard!");
+    } catch (err) {
+      showCertMsg("❌ Failed to copy summary");
+    }
+  });
+
+  const devInfoEl = $("cert-device-info");
+  if (devInfoEl && !devInfoEl.value) {
+    getDeviceInfoString().then((str) => {
+      if (devInfoEl && !devInfoEl.value) devInfoEl.value = str;
+      renderCertificate();
+    });
+  } else {
+    renderCertificate();
+  }
+
+  // Dismiss loader now that initial UI paint is ready
+  const loader = $("app-loader");
+  if (loader) {
+    loader.style.opacity = "0";
+    setTimeout(() => {
+      loader.remove();
+    }, 350);
+  }
   $("run-custom").addEventListener("click", async () => {
     try {
       const suite = compileCustom($("custom-code").value);

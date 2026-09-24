@@ -48,25 +48,6 @@
       "q4Bytes": 84221440
     },
     {
-      "id": "smollm-135m-instruct",
-      "name": "SmolLM 135M Instruct",
-      "family": "SmolLM",
-      "params": 134515008,
-      "file": "models/smollm-135m-instruct/model.q4.bin",
-      "tokenizer": "models/smollm-135m-instruct/tokenizer.json",
-      "card": "models/smollm-135m-instruct/card.json",
-      "license": "Apache-2.0",
-      "source": "HuggingFaceTB/SmolLM-135M-Instruct",
-      "sourceUrl": "https://huggingface.co/HuggingFaceTB/SmolLM-135M-Instruct",
-      "template": "chatml",
-      "defaultSystem": "You are a helpful AI assistant named SmolLM, trained by Hugging Face",
-      "blurb": "Previous-generation SmolLM instruct. Same size class, 600B pretrain tokens.",
-      "maker": "Hugging Face Smol Models Research",
-      "year": "2024",
-      "story": "The first SmolLM generation from Hugging Face (2024, Apache-2.0), pretrained on a Cosmopedia / FineWeb-style mix of about 600 billion tokens, then instruction-tuned. Same 135M class as SmolLM2. Keep it if you want to see what a year of data and recipe changes bought in SmolLM2.",
-      "q4Bytes": 84221440
-    },
-    {
       "id": "l20-edu-135m",
       "name": "L20-Edu 135M",
       "family": "L20-Edu",
