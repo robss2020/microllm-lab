@@ -465,7 +465,18 @@ async function ensureLoaded() {
       }
     }
     if (!gpuOk) {
-      $("gpu-name").textContent = "Adapter: none (CPU fallback)";
+      const ua = navigator.userAgent || "";
+      const isFirefox = /Firefox|FxiOS/i.test(ua);
+      if (isFirefox) {
+        $("gpu-name").innerHTML = `Adapter: none (Firefox WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
+        $("btn-show-webgpu-help")?.addEventListener("click", () => {
+          sessionStorage.removeItem("dismissed_webgpu_notice");
+          checkWebGpuNotice(true);
+          $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
+        });
+      } else {
+        $("gpu-name").textContent = "Adapter: none (CPU fallback)";
+      }
       const tokenizerSpec = await fetch(m.tokenizer).then((r) => r.json());
       await new Promise((resolve, reject) => {
         const onMsg = (ev) => {
@@ -871,6 +882,284 @@ async function runAutoSuite(params) {
   document.title = `DONE ${tag} wall ${wallMs.toFixed(0)}ms`;
 }
 
+async function checkWebGpuNotice(forceShow = false, mockUa = null) {
+  const noticeEl = $("webgpu-notice");
+  if (!noticeEl) return;
+
+  const ua = mockUa || globalThis.__mockUA || navigator.userAgent || "";
+  const isFirefox = /Firefox|FxiOS/i.test(ua);
+  const isWindows = /Windows|Win32|Win64/i.test(ua) || (!/Mac/i.test(ua) && /Win/i.test(navigator.platform || ""));
+  const isMac = !isWindows && (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(navigator.platform || ""));
+  const isLinux = !isWindows && !isMac && /Linux/i.test(ua) && !/Android/i.test(ua);
+
+  const g = await tryWebGpu();
+  if (g.ok) {
+    if (forceShow) {
+      noticeEl.className = "webgpu-notice success";
+      noticeEl.hidden = false;
+      noticeEl.innerHTML = `
+        <div class="notice-header">
+          <div class="notice-title-row">
+            <span class="notice-icon" aria-hidden="true">✅</span>
+            <div class="notice-titles">
+              <h3 class="notice-title">WebGPU is Active</h3>
+              <p class="notice-desc">Hardware acceleration is active: <strong>${g.vendor || ""} (${g.name || ""})</strong>. Models will execute directly on this GPU at peak speed.</p>
+            </div>
+          </div>
+          <button type="button" class="btn ghost notice-dismiss" id="btn-dismiss-notice" aria-label="Dismiss">✕</button>
+        </div>
+      `;
+      noticeEl.querySelector("#btn-dismiss-notice")?.addEventListener("click", () => {
+        noticeEl.hidden = true;
+      });
+    } else {
+      noticeEl.hidden = true;
+    }
+    return;
+  }
+
+  // WebGPU is NOT enabled
+  if (isFirefox) {
+    $("gpu-name").innerHTML = `Adapter: none (Firefox WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
+    $("btn-show-webgpu-help")?.addEventListener("click", () => {
+      sessionStorage.removeItem("dismissed_webgpu_notice");
+      checkWebGpuNotice(true);
+      $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
+    });
+  }
+
+  const isDismissed = sessionStorage.getItem("dismissed_webgpu_notice") === "1";
+  if (isDismissed && !forceShow) {
+    noticeEl.hidden = true;
+    return;
+  }
+
+  noticeEl.className = "webgpu-notice";
+  noticeEl.hidden = false;
+
+  const osLabel = isMac ? "macOS" : isWindows ? "Windows" : isLinux ? "Linux" : "your OS";
+  const platformTitle = isFirefox
+    ? `Turn on WebGPU in Firefox (${osLabel}) for 10–20× Faster Performance`
+    : `WebGPU Hardware Acceleration Not Detected`;
+
+  let stepsHtml = "";
+  if (isFirefox) {
+    if (isMac) {
+      stepsHtml = `
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-content">
+            Open a new tab and enter <code class="click-copy" data-copy="about:config" title="Click to copy">about:config</code>
+            <button type="button" class="copy-pill" data-copy="about:config">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-content">
+            Click <strong>"Accept the Risk and Continue"</strong> if prompted.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="dom.webgpu.enabled" title="Click to copy">dom.webgpu.enabled</code> and double-click to toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="dom.webgpu.enabled">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="gfx.webgpu.ignore-blocklist" title="Click to copy">gfx.webgpu.ignore-blocklist</code> and toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="gfx.webgpu.ignore-blocklist">Copy</button>
+            <span class="step-tip">(Bypasses macOS release blocklist to activate Apple Metal backend)</span>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-content">
+            <em>(Optional)</em> If adapter is still not found, search for <code class="click-copy" data-copy="gfx.webgpu.force-enabled" title="Click to copy">gfx.webgpu.force-enabled</code> and set to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="gfx.webgpu.force-enabled">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">6</span>
+          <div class="step-content">
+            <strong>Restart Firefox completely</strong> (press Cmd+Q and relaunch), then reload this page.
+          </div>
+        </li>
+      `;
+    } else if (isWindows) {
+      stepsHtml = `
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-content">
+            Open a new tab and enter <code class="click-copy" data-copy="about:config" title="Click to copy">about:config</code>
+            <button type="button" class="copy-pill" data-copy="about:config">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-content">
+            Click <strong>"Accept the Risk and Continue"</strong> if prompted.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="dom.webgpu.enabled" title="Click to copy">dom.webgpu.enabled</code> and double-click to toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="dom.webgpu.enabled">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="gfx.webgpu.force-enabled" title="Click to copy">gfx.webgpu.force-enabled</code> and toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="gfx.webgpu.force-enabled">Copy</button>
+            <span class="step-tip">(Ensures DirectX 12 / Vulkan GPU adapter acquisition)</span>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-content">
+            <strong>Restart Firefox</strong>, then reload this page.
+          </div>
+        </li>
+      `;
+    } else {
+      stepsHtml = `
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-content">
+            Open a new tab and enter <code class="click-copy" data-copy="about:config" title="Click to copy">about:config</code>
+            <button type="button" class="copy-pill" data-copy="about:config">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-content">
+            Click <strong>"Accept the Risk and Continue"</strong> if prompted.
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="dom.webgpu.enabled" title="Click to copy">dom.webgpu.enabled</code> and toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="dom.webgpu.enabled">Copy</button>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-content">
+            Search for <code class="click-copy" data-copy="gfx.webgpu.ignore-blocklist" title="Click to copy">gfx.webgpu.ignore-blocklist</code> and toggle it to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="gfx.webgpu.ignore-blocklist">Copy</button>
+            <span class="step-tip">(Enables Vulkan graphics backend on Linux)</span>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">5</span>
+          <div class="step-content">
+            <strong>Restart Firefox</strong>, then reload this page.
+          </div>
+        </li>
+      `;
+    }
+  } else {
+    stepsHtml = `
+      <li>
+        <span class="step-num">1</span>
+        <div class="step-content">
+          Ensure you are running an up-to-date modern browser with WebGPU support (Chrome 113+, Edge 113+, Brave, or Firefox with WebGPU enabled).
+        </div>
+      </li>
+      <li>
+        <span class="step-num">2</span>
+        <div class="step-content">
+          Verify hardware acceleration is enabled in your browser settings (e.g. <code>chrome://settings/system</code>: "Use graphics acceleration when available").
+        </div>
+      </li>
+    `;
+  }
+
+  noticeEl.innerHTML = `
+    <div class="notice-header">
+      <div class="notice-title-row">
+        <span class="notice-icon" aria-hidden="true">⚠️</span>
+        <div class="notice-titles">
+          <h3 class="notice-title">${platformTitle}</h3>
+          <p class="notice-desc">
+            MicroLLM lab is currently running on the <strong>CPU fallback (WASM)</strong> at ~8–20 tok/s.
+            With <strong>WebGPU</strong>, models run directly on your GPU hardware at <strong>100–300+ tok/s</strong> (~10–20× faster).
+            Users should be using WebGPU, not WASM. Follow the instructions below to enable it:
+          </p>
+        </div>
+      </div>
+      <button type="button" class="btn ghost notice-dismiss" id="btn-dismiss-notice" aria-label="Dismiss notice" title="Dismiss notice">✕</button>
+    </div>
+    <div class="notice-body">
+      <div class="notice-platform-badge">Detected: ${isFirefox ? "Firefox" : "Browser"} on ${osLabel} · Status: WebGPU not active (${g.reason || "no adapter"})</div>
+      <ol class="notice-steps">
+        ${stepsHtml}
+      </ol>
+      <div class="notice-actions">
+        <button type="button" class="btn primary" id="btn-recheck-webgpu">Re-check WebGPU</button>
+        <button type="button" class="btn" id="btn-reload-page">Reload page</button>
+        <span class="notice-alt-tip">
+          💡 Alternative: Google Chrome, Microsoft Edge, and Brave support WebGPU out of the box on ${osLabel}.
+        </span>
+      </div>
+    </div>
+  `;
+
+  // Bind dismiss
+  noticeEl.querySelector("#btn-dismiss-notice")?.addEventListener("click", () => {
+    sessionStorage.setItem("dismissed_webgpu_notice", "1");
+    noticeEl.hidden = true;
+  });
+
+  // Bind reload
+  noticeEl.querySelector("#btn-reload-page")?.addEventListener("click", () => {
+    location.reload();
+  });
+
+  // Bind recheck
+  noticeEl.querySelector("#btn-recheck-webgpu")?.addEventListener("click", async () => {
+    const btn = noticeEl.querySelector("#btn-recheck-webgpu");
+    if (btn) btn.textContent = "Checking…";
+    const newG = await tryWebGpu();
+    if (newG.ok) {
+      sessionStorage.removeItem("dismissed_webgpu_notice");
+      await checkWebGpuNotice(true);
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      if (btn) {
+        btn.textContent = "Still not detected";
+        setTimeout(() => { btn.textContent = "Re-check WebGPU"; }, 2000);
+      }
+    }
+  });
+
+  // Bind copy buttons
+  noticeEl.querySelectorAll("[data-copy]").forEach((el) => {
+    el.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const txt = el.getAttribute("data-copy");
+      if (!txt) return;
+      try {
+        await navigator.clipboard.writeText(txt);
+        const originalText = el.textContent;
+        el.textContent = "Copied!";
+        el.classList.add("copied");
+        setTimeout(() => {
+          el.textContent = originalText;
+          el.classList.remove("copied");
+        }, 1500);
+      } catch (err) {
+        log("Clipboard error: " + err.message);
+      }
+    });
+  });
+}
+
 async function boot() {
   $("llm-prompt").value = LLM_PROMPT;
   $("custom-code").value = EXAMPLE_CUSTOM;
@@ -889,6 +1178,7 @@ async function boot() {
   renderHud();
   renderCompare();
   updateEstimate();
+  checkWebGpuNotice();
   $("active-dtype").addEventListener("change", (e) => setActive(e.target.value));
   $("dl-all")?.addEventListener("click", () => downloadAll());
   $("ds-all")?.addEventListener("click", () => discardAll());
@@ -1018,3 +1308,4 @@ globalThis.state = state;
 globalThis.setActive = setActive;
 globalThis.ensureLoaded = ensureLoaded;
 globalThis.generateOnce = generateOnce;
+globalThis.checkWebGpuNotice = checkWebGpuNotice;
