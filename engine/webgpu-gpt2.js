@@ -49,6 +49,7 @@ struct StepParams {
 @group(0) @binding(3) var<storage, read_write> SCR: array<f32>;
 @group(0) @binding(4) var<storage, read> OFF: array<u32>;
 @group(0) @binding(5) var<uniform> step: StepParams;
+@group(0) @binding(8) var<storage, read_write> OUT: array<u32>;
 
 var<workgroup> src: array<f32, 3072>;
 var<workgroup> red: array<f32, 256>;
@@ -110,7 +111,10 @@ fn reduce_sum(lid: u32) -> f32 {
 fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
   let lid = lidv.x;
   let pos = step.pos;
-  let tok = step.token;
+  var tok = step.token;
+  if (tok == 0xffffffffu && step.li_start > 0u) {
+    tok = OUT[step.li_start - 1u];
+  }
   let lmP = OFF[0];
   let lmS = OFF[1];
   let wpe = OFF[2];
@@ -371,7 +375,6 @@ struct ArgmaxParams {
 
 @group(0) @binding(6) var<uniform> argmax_params: ArgmaxParams;
 @group(0) @binding(7) var<storage, read_write> HIST: array<u32>;
-@group(0) @binding(8) var<storage, read_write> OUT: array<u32>;
 
 var<workgroup> redi: array<u32, 256>;
 
@@ -512,8 +515,9 @@ export class GpuGpt2Engine {
     this.bSCR = d.createBuffer({ size: (20000 + 50257 + 256) * 4, usage: storage, label: "GPT2_SCR" });
     this.bOUT = d.createBuffer({ size: 1024 * 4, usage: storage | GPUBufferUsage.COPY_SRC, label: "GPT2_OUT" });
     this.bHIST = d.createBuffer({ size: 2048 * 4, usage: storage | GPUBufferUsage.COPY_DST, label: "GPT2_HIST" });
-    this.bStep = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "GPT2_Step" });
-    this.bArgmax = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "GPT2_Argmax" });
+    const MAX_STEPS = 64;
+    this.bStep = d.createBuffer({ size: MAX_STEPS * 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "GPT2_Step" });
+    this.bArgmax = d.createBuffer({ size: MAX_STEPS * 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "GPT2_Argmax" });
     this.bStage = d.createBuffer({ size: 1024 * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: "GPT2_Stage" });
 
     this.bytesAllocated =
@@ -544,8 +548,8 @@ export class GpuGpt2Engine {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
@@ -563,8 +567,8 @@ export class GpuGpt2Engine {
         { binding: 2, resource: { buffer: this.bKV } },
         { binding: 3, resource: { buffer: this.bSCR } },
         { binding: 4, resource: { buffer: this.bOFF } },
-        { binding: 5, resource: { buffer: this.bStep } },
-        { binding: 6, resource: { buffer: this.bArgmax } },
+        { binding: 5, resource: { buffer: this.bStep, size: 256 } },
+        { binding: 6, resource: { buffer: this.bArgmax, size: 256 } },
         { binding: 7, resource: { buffer: this.bHIST } },
         { binding: 8, resource: { buffer: this.bOUT } },
       ],
@@ -590,14 +594,14 @@ export class GpuGpt2Engine {
 
       const enc = d.createCommandEncoder();
       const pass1 = enc.beginComputePass();
-      pass1.setBindGroup(0, this.bg);
+      pass1.setBindGroup(0, this.bg, [0, 0]);
       pass1.setPipeline(this.pStep);
       pass1.dispatchWorkgroups(1);
       pass1.end();
 
       if (isLast) {
         const pass2 = enc.beginComputePass();
-        pass2.setBindGroup(0, this.bg);
+        pass2.setBindGroup(0, this.bg, [0, 0]);
         pass2.setPipeline(this.pLmHead);
         pass2.dispatchWorkgroups(Math.ceil(50257 / 256));
         pass2.end();
@@ -605,7 +609,7 @@ export class GpuGpt2Engine {
         // For first generated token: no penalty on prompt tokens (penalty = 0.0, block = 0)
         d.queue.writeBuffer(this.bArgmax, 0, new Uint32Array([0, 0, 0, 0]));
         const pass3 = enc.beginComputePass();
-        pass3.setBindGroup(0, this.bg);
+        pass3.setBindGroup(0, this.bg, [0, 0]);
         pass3.setPipeline(this.pArgmax);
         pass3.dispatchWorkgroups(1);
         pass3.end();
@@ -637,49 +641,75 @@ export class GpuGpt2Engine {
     let histLen = 1;
     d.queue.writeBuffer(this.bHIST, 0, new Uint32Array([nextTok]));
 
-    // 2. Autoregressive decode loop
-    for (let stepIdx = 1; stepIdx < maxNewTokens; stepIdx++) {
-      const pos = ids.length + stepIdx - 1;
-      if (pos >= 1024) break;
+    // 2. Autoregressive decode loop in chunks of up to 32 tokens
+    let stepIdx = 1;
+    while (stepIdx < maxNewTokens) {
+      const remaining = maxNewTokens - stepIdx;
+      const chunkSize = Math.min(32, remaining);
+      if (ids.length + stepIdx - 1 + chunkSize > 1024) break;
 
-      d.queue.writeBuffer(this.bStep, 0, new Uint32Array([pos, nextTok, 0, 12]));
-      const uArg = new Uint32Array(4);
-      uArg[0] = stepIdx;
-      uArg[1] = histLen;
-      uArg[2] = 3; // 3-gram repetition blocking
-      new Float32Array(uArg.buffer)[3] = 1.15; // 1.15 repetition penalty on recent generated tokens
-      d.queue.writeBuffer(this.bArgmax, 0, uArg);
+      const stepData = new Uint32Array((chunkSize * 256) / 4);
+      const argData = new Uint32Array((chunkSize * 256) / 4);
+      for (let s = 0; s < chunkSize; s++) {
+        const curStep = stepIdx + s;
+        const pos = ids.length + curStep - 1;
+        const so = (s * 256) / 4;
+        stepData[so + 0] = pos;
+        stepData[so + 1] = s === 0 ? nextTok : 0xffffffff;
+        stepData[so + 2] = curStep; // li_start = curStep
+        stepData[so + 3] = 12;
+
+        argData[so + 0] = curStep;
+        argData[so + 1] = histLen + s;
+        argData[so + 2] = 3; // 3-gram repetition blocking
+        new Float32Array(argData.buffer)[so + 3] = 1.15; // 1.15 repetition penalty on recent generated tokens
+      }
+      d.queue.writeBuffer(this.bStep, 0, stepData);
+      d.queue.writeBuffer(this.bArgmax, 0, argData);
 
       const enc = d.createCommandEncoder();
-      const pass1 = enc.beginComputePass();
-      pass1.setBindGroup(0, this.bg);
-      pass1.setPipeline(this.pStep);
-      pass1.dispatchWorkgroups(1);
-      pass1.end();
+      for (let s = 0; s < chunkSize; s++) {
+        const off = s * 256;
+        const pass1 = enc.beginComputePass();
+        pass1.setBindGroup(0, this.bg, [off, off]);
+        pass1.setPipeline(this.pStep);
+        pass1.dispatchWorkgroups(1);
+        pass1.end();
 
-      const pass2 = enc.beginComputePass();
-      pass2.setBindGroup(0, this.bg);
-      pass2.setPipeline(this.pLmHead);
-      pass2.dispatchWorkgroups(Math.ceil(50257 / 256));
-      pass2.end();
+        const pass2 = enc.beginComputePass();
+        pass2.setBindGroup(0, this.bg, [off, off]);
+        pass2.setPipeline(this.pLmHead);
+        pass2.dispatchWorkgroups(Math.ceil(50257 / 256));
+        pass2.end();
 
-      const pass3 = enc.beginComputePass();
-      pass3.setBindGroup(0, this.bg);
-      pass3.setPipeline(this.pArgmax);
-      pass3.dispatchWorkgroups(1);
-      pass3.end();
+        const pass3 = enc.beginComputePass();
+        pass3.setBindGroup(0, this.bg, [off, off]);
+        pass3.setPipeline(this.pArgmax);
+        pass3.dispatchWorkgroups(1);
+        pass3.end();
+      }
 
-      enc.copyBufferToBuffer(this.bOUT, stepIdx * 4, this.bStage, 0, 4);
+      enc.copyBufferToBuffer(this.bOUT, stepIdx * 4, this.bStage, 0, chunkSize * 4);
       d.queue.submit([enc.finish()]);
 
       await this.bStage.mapAsync(GPUMapMode.READ);
-      nextTok = new Uint32Array(this.bStage.getMappedRange().slice(0, 4))[0];
+      const chunkTokens = Array.from(new Uint32Array(this.bStage.getMappedRange().slice(0, chunkSize * 4)));
       this.bStage.unmap();
 
-      accepted.push(nextTok);
-      histLen++;
-      if (onToken) await onToken(nextTok, { phase: "decode" });
-      if (nextTok === eosId) break;
+      let hitEos = false;
+      for (let s = 0; s < chunkSize; s++) {
+        const tok = chunkTokens[s];
+        accepted.push(tok);
+        nextTok = tok;
+        histLen++;
+        if (onToken) await onToken(tok, { phase: "decode" });
+        if (tok === eosId) {
+          hitEos = true;
+          break;
+        }
+      }
+      if (hitEos) break;
+      stepIdx += chunkSize;
     }
 
     return {
