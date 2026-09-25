@@ -1653,7 +1653,13 @@ async function boot() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSend();
   });
   document.querySelectorAll(".tabs button").forEach((b) =>
-    b.addEventListener("click", () => setTab(b.dataset.tab)),
+    b.addEventListener("click", () => {
+      setTab(b.dataset.tab);
+      if (b.closest(".bottom-tabs")) {
+        const p = $("panel-" + b.dataset.tab);
+        if (p) p.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }),
   );
   $("run-builtin").addEventListener("click", async () => {
     if (!state.active) return log("enable a model");
