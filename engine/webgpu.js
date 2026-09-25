@@ -1143,7 +1143,8 @@ export class GpuPetitGPT {
       while (accepted.length < maxNewTokens) {
         const x = accepted[accepted.length - 1];
         const pos = this.cacheLen;
-        const n = Math.min(METAL_MAX_TOK, maxNewTokens - accepted.length);
+        const chunkCap = (accepted.length <= 1 && eosId !== -1) ? 16 : METAL_MAX_TOK;
+        const n = Math.min(chunkCap, maxNewTokens - accepted.length);
         const runIds = new Array(n);
         runIds[0] = x;
         for (let i = 1; i < n; i++) runIds[i] = CHAIN_TOK;

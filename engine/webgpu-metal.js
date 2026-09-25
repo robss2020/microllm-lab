@@ -179,6 +179,42 @@ fn dot_slice(row: u32, cols: u32, packOff: u32, scaleOff: u32, kid: u32, stride:
   }
   return acc;
 }
+fn dot_direct(row: u32, cols: u32, packOff: u32, scaleOff: u32, srcOff: u32) -> f32 {
+  if ((job.flags & FLAG_F16) == FLAG_F16) {
+    var s = 0.0;
+    let nW = cols / 2u;
+    let base = packOff + row * nW;
+    for (var w = 0u; w < nW; w++) {
+      let word = PACK[base + w];
+      let pair = unpack2x16float(word);
+      let xb = srcOff + w * 2u;
+      s += pair.x * SCR[xb] + pair.y * SCR[xb + 1u];
+    }
+    return s;
+  }
+  let ng = cols / 32u;
+  let rowU = cols / 8u;
+  var base = packOff + row * rowU;
+  var scOff = scaleOff + row * ng;
+  var xb = srcOff;
+  var acc = 0.0;
+  for (var g = 0u; g < ng; g++) {
+    let sc = SC[scOff + g];
+    var s = 0.0;
+    for (var w = 0u; w < 4u; w++) {
+      let word = PACK[base + w];
+      let p = xb + w * 8u;
+      let lo = q4nibs(word);
+      let hi = q4nibs(word >> 16u);
+      s += dot(lo, vec4<f32>(SCR[p], SCR[p + 1u], SCR[p + 2u], SCR[p + 3u]));
+      s += dot(hi, vec4<f32>(SCR[p + 4u], SCR[p + 5u], SCR[p + 6u], SCR[p + 7u]));
+    }
+    acc += s * sc;
+    base += 4u;
+    xb += 32u;
+  }
+  return acc;
+}
 fn scale_acc(acc: f32, _row: u32, _scaleOff: u32) -> f32 { return acc; }
 `;
   }
@@ -209,6 +245,19 @@ fn dot_slice(row: u32, cols: u32, packOff: u32, _s: u32, kid: u32, stride: u32) 
   while (w < rowU) {
     s += q8_word(PACK[packOff + row * rowU + w], w * 4u);
     w += stride;
+  }
+  return s;
+}
+fn dot_direct(row: u32, cols: u32, packOff: u32, _s: u32, srcOff: u32) -> f32 {
+  let rowU = cols / 4u;
+  var s = 0.0;
+  for (var w = 0u; w < rowU; w++) {
+    let word = PACK[packOff + row * rowU + w];
+    let xb = srcOff + w * 4u;
+    s += i8_of(word) * SCR[xb]
+       + i8_of(word >> 8u) * SCR[xb + 1u]
+       + i8_of(word >> 16u) * SCR[xb + 2u]
+       + i8_of(word >> 24u) * SCR[xb + 3u];
   }
   return s;
 }
@@ -246,6 +295,21 @@ fn dot_slice(row: u32, cols: u32, packOff: u32, _s: u32, kid: u32, stride: u32) 
   while (w < nW) { s += packed_pair(packOff, row, cols, w); w += stride; }
   return s;
 }
+fn dot_direct(row: u32, cols: u32, packOff: u32, _s: u32, srcOff: u32) -> f32 {
+  var s = 0.0;
+  let nW = cols / 2u;
+  for (var w = 0u; w < nW; w++) {
+    let word = PACK[packOff + (row * cols) / 2u + w];
+    let xb = srcOff + w * 2u;
+    ${kind === "f16"
+      ? `let pair = unpack2x16float(word);
+    s += pair.x * SCR[xb] + pair.y * SCR[xb + 1u];`
+      : `let lo = bitcast<f32>((word & 0xffffu) << 16u);
+    let hi = bitcast<f32>((word >> 16u) << 16u);
+    s += lo * SCR[xb] + hi * SCR[xb + 1u];`}
+  }
+  return s;
+}
 fn scale_acc(acc: f32, _row: u32, _s: u32) -> f32 { return acc; }
 `;
   }
@@ -273,6 +337,18 @@ fn dot_slice(row: u32, cols: u32, packOff: u32, _s: u32, kid: u32, stride: u32) 
        + W[base + k + 2u] * src[k + 2u] + W[base + k + 3u] * src[k + 3u];
     w += stride;
   }
+  return s;
+}
+fn dot_direct(row: u32, cols: u32, packOff: u32, _s: u32, srcOff: u32) -> f32 {
+  var s = 0.0;
+  let base = packOff + row * cols;
+  var k = 0u;
+  while (k + 3u < cols) {
+    s += W[base + k] * SCR[srcOff + k] + W[base + k + 1u] * SCR[srcOff + k + 1u]
+       + W[base + k + 2u] * SCR[srcOff + k + 2u] + W[base + k + 3u] * SCR[srcOff + k + 3u];
+    k += 4u;
+  }
+  while (k < cols) { s += W[base + k] * SCR[srcOff + k]; k++; }
   return s;
 }
 fn scale_acc(acc: f32, _row: u32, _s: u32) -> f32 { return acc; }
@@ -477,6 +553,42 @@ fn fat(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_
   let row = gid.x;
   if (row >= job.rows) { return; }
   write_row(row, dot_full(row, job.cols, job.packOff, job.scaleOff));
+}
+
+@compute @workgroup_size(${GEMV_WG})
+fn direct(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let row = gid.x;
+  if (row >= job.rows) { return; }
+  let acc = dot_direct(row, job.cols, job.packOff, job.scaleOff, job.srcOff);
+  write_row(row, acc);
+}
+
+@compute @workgroup_size(${GEMV_WG})
+fn norm_rms(@builtin(local_invocation_id) lidv: vec3<u32>) {
+  let lid = lidv.x;
+  var ss = 0.0;
+  var i = lid;
+  while (i < D) {
+    let v = SCR[job.srcOff + i];
+    ss += v * v;
+    i += WG;
+  }
+  red[lid] = ss;
+  reduce_sum_wg(lid);
+  let inv = inverseSqrt((red[0] + red[1]) / f32(D) + 1e-6);
+  i = lid;
+  while (i < D) {
+    SCR[job.dstOff + i] = SCR[job.srcOff + i] * inv * (${gamma});
+    i += WG;
+  }
+}
+
+@compute @workgroup_size(${GEMV_WG})
+fn silu_gate(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= FF) { return; }
+  let v = SCR[FF1_OFF + i];
+  SCR[FF1_OFF + i] = (v / (1.0 + exp(-v))) * SCR[FF3_OFF + i];
 }
 `;
 
@@ -830,6 +942,9 @@ export async function initMetal(engine) {
 
   engine.pGemvCoop = await makePipe(d, shaders.gemv, "coop", layoutGemv, "gemv-coop");
   engine.pGemvFat = await makePipe(d, shaders.gemv, "fat", layoutGemv, "gemv-fat");
+  engine.pGemvDirect = await makePipe(d, shaders.gemv, "direct", layoutGemv, "gemv-direct");
+  engine.pNormRMS = await makePipe(d, shaders.gemv, "norm_rms", layoutGemv, "norm-rms");
+  engine.pSilu = await makePipe(d, shaders.gemv, "silu_gate", layoutGemv, "silu-gate");
   engine.pEmbed = await makePipe(
     d,
     shaders.embed,
@@ -840,7 +955,7 @@ export async function initMetal(engine) {
   engine.pAttn = await makePipe(d, shaders.attn, "main", layoutAttn, "attn");
   engine.pArgmax = await makePipe(d, shaders.argmax, "main", layoutArgmax, "argmax");
 
-  const nJobs = c.nLayers * 8 + 8;
+  const nJobs = c.nLayers * 8 + 16;
   engine.jobBuf = engine._alloc(nJobs * JOB_STRIDE, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, "jobs");
   engine.stepBuf = engine._alloc(METAL_MAX_TOK * JOB_STRIDE, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, "steps");
   const jobs = new Uint32Array((nJobs * JOB_STRIDE) / 4);
@@ -857,7 +972,9 @@ export async function initMetal(engine) {
   const ATT = 2 * D + QKV;
   const FF1 = ATT + D;
   const LOG = FF1 + FF + FF;
+  const XN_OFF = D;
   engine.arch = c.arch || "llama";
+  engine.useDirectMetal = engine.arch !== "gpt2";
 
   if (c.arch === "gpt2") {
     const g2off = (li) => {
@@ -948,76 +1065,95 @@ export async function initMetal(engine) {
       });
     }
   } else {
-  const head = headOff(kind, off, c.nLayers);
+    const head = headOff(kind, off, c.nLayers);
 
-  engine.jEmbed = addJob({
-    rows: D,
-    cols: D,
-    packOff: head.lmP,
-    scaleOff: head.lmS,
-    srcOff: 0,
-    dstOff: 0,
-    addX: 0,
-  });
-  engine.jLm = addJob({
-    rows: c.vocabSize,
-    cols: D,
-    packOff: head.lmP,
-    scaleOff: head.lmS,
-    srcOff: 0,
-    dstOff: LOG,
-    addX: 0,
-    flags: FLAG_RMS,
-    normOff: head.nf,
-  });
-  engine.layerJobs = [];
-  for (let li = 0; li < c.nLayers; li++) {
-    const L = layerOff(kind, off, li);
-    engine.layerJobs.push({
-      qkv: addJob({
-        rows: QKV,
-        cols: D,
-        packOff: L.qkvP,
-        scaleOff: L.qkvS,
-        srcOff: 0,
-        dstOff: 2 * D,
-        addX: 0,
-        flags: FLAG_RMS,
-        normOff: L.n1,
-      }),
-      attn: addJob({ rows: li, cols: 0, packOff: 0, scaleOff: 0, srcOff: 0, dstOff: 0, addX: 0 }),
-      proj: addJob({
-        rows: D,
-        cols: D,
-        packOff: L.projP,
-        scaleOff: L.projS,
-        srcOff: ATT,
-        dstOff: 0,
-        addX: 1,
-      }),
-      w13: addJob({
-        rows: 2 * FF,
-        cols: D,
-        packOff: L.w1P,
-        scaleOff: L.w1S,
-        srcOff: 0,
-        dstOff: FF1,
-        addX: 0,
-        flags: FLAG_RMS,
-        normOff: L.n2,
-      }),
-      w2: addJob({
-        rows: D,
-        cols: FF,
-        packOff: L.w2P,
-        scaleOff: L.w2S,
-        srcOff: FF1,
-        dstOff: 0,
-        addX: 1,
-        flags: FLAG_SILU,
-      }),
+    engine.jEmbed = addJob({
+      rows: D,
+      cols: D,
+      packOff: head.lmP,
+      scaleOff: head.lmS,
+      srcOff: 0,
+      dstOff: 0,
+      addX: 0,
     });
-  }
+    engine.normLm = addJob({
+      rows: 1,
+      cols: D,
+      srcOff: 0,
+      dstOff: XN_OFF,
+      normOff: head.nf,
+    });
+    engine.jLm = addJob({
+      rows: c.vocabSize,
+      cols: D,
+      packOff: head.lmP,
+      scaleOff: head.lmS,
+      srcOff: XN_OFF,
+      dstOff: LOG,
+      addX: 0,
+      flags: 0,
+    });
+    engine.layerJobs = [];
+    for (let li = 0; li < c.nLayers; li++) {
+      const L = layerOff(kind, off, li);
+      engine.layerJobs.push({
+        norm1: addJob({
+          rows: 1,
+          cols: D,
+          srcOff: 0,
+          dstOff: XN_OFF,
+          normOff: L.n1,
+        }),
+        qkv: addJob({
+          rows: QKV,
+          cols: D,
+          packOff: L.qkvP,
+          scaleOff: L.qkvS,
+          srcOff: XN_OFF,
+          dstOff: 2 * D,
+          addX: 0,
+          flags: 0,
+        }),
+        attn: addJob({ rows: li, cols: 0, packOff: 0, scaleOff: 0, srcOff: 0, dstOff: 0, addX: 0 }),
+        proj: addJob({
+          rows: D,
+          cols: D,
+          packOff: L.projP,
+          scaleOff: L.projS,
+          srcOff: ATT,
+          dstOff: 0,
+          addX: 1,
+          flags: 0,
+        }),
+        norm2: addJob({
+          rows: 1,
+          cols: D,
+          srcOff: 0,
+          dstOff: XN_OFF,
+          normOff: L.n2,
+        }),
+        w13: addJob({
+          rows: 2 * FF,
+          cols: D,
+          packOff: L.w1P,
+          scaleOff: L.w1S,
+          srcOff: XN_OFF,
+          dstOff: FF1,
+          addX: 0,
+          flags: 0,
+        }),
+        w2: addJob({
+          rows: D,
+          cols: FF,
+          packOff: L.w2P,
+          scaleOff: L.w2S,
+          srcOff: FF1,
+          dstOff: 0,
+          addX: 1,
+          flags: 0,
+        }),
+      });
+    }
   }
   d.queue.writeBuffer(engine.jobBuf, 0, jobs);
 
@@ -1061,7 +1197,7 @@ export async function initMetal(engine) {
   });
 
   engine.useMetalSplit = true;
-  engine.mode = `metal-${kind}-mwg`;
+  engine.mode = engine.useDirectMetal ? `metal-${kind}-direct` : `metal-${kind}-mwg`;
   engine.metalError = null;
 }
 
@@ -1071,6 +1207,24 @@ function dispatchGemv(pass, engine, jobId, rows) {
   pass.setBindGroup(0, engine.bgGemv, [jobId * JOB_STRIDE]);
   if (fat) pass.dispatchWorkgroups(Math.ceil(rows / GEMV_WG));
   else pass.dispatchWorkgroups(Math.ceil(rows / ROW_TILE));
+}
+
+function dispatchDirect(pass, engine, jobId, rows) {
+  pass.setPipeline(engine.pGemvDirect);
+  pass.setBindGroup(0, engine.bgGemv, [jobId * JOB_STRIDE]);
+  pass.dispatchWorkgroups(Math.ceil(rows / GEMV_WG));
+}
+
+function dispatchNorm(pass, engine, jobId) {
+  pass.setPipeline(engine.pNormRMS);
+  pass.setBindGroup(0, engine.bgGemv, [jobId * JOB_STRIDE]);
+  pass.dispatchWorkgroups(1);
+}
+
+function dispatchSilu(pass, engine, ff) {
+  pass.setPipeline(engine.pSilu);
+  pass.setBindGroup(0, engine.bgGemv, [0]);
+  pass.dispatchWorkgroups(Math.ceil(ff / GEMV_WG));
 }
 
 export function encodeMetalTokens(engine, pass, pos0, ids, { doLogits, logitsEach }) {
@@ -1093,31 +1247,63 @@ export function encodeMetalTokens(engine, pass, pos0, ids, { doLogits, logitsEac
     pass.setBindGroup(0, engine.bgEmbed, [ti * JOB_STRIDE]);
     pass.dispatchWorkgroups(Math.ceil(D / GEMV_WG));
 
-    const nL = engine.debugMaxLayers != null ? engine.debugMaxLayers : c.nLayers;
-    for (let li = 0; li < nL; li++) {
-      const J = engine.layerJobs[li];
-      if (!engine.debugNoAttn) {
-        dispatchGemv(pass, engine, J.qkv, QKV);
-        pass.setPipeline(engine.pAttn);
-        pass.setBindGroup(0, engine.bgAttn, [ti * JOB_STRIDE, J.attn * JOB_STRIDE]);
-        pass.dispatchWorkgroups(1);
-        dispatchGemv(pass, engine, J.proj, D);
+    if (engine.useDirectMetal) {
+      const nL = engine.debugMaxLayers != null ? engine.debugMaxLayers : c.nLayers;
+      for (let li = 0; li < nL; li++) {
+        const J = engine.layerJobs[li];
+        if (!engine.debugNoAttn) {
+          dispatchNorm(pass, engine, J.norm1);
+          dispatchDirect(pass, engine, J.qkv, QKV);
+          pass.setPipeline(engine.pAttn);
+          pass.setBindGroup(0, engine.bgAttn, [ti * JOB_STRIDE, J.attn * JOB_STRIDE]);
+          pass.dispatchWorkgroups(1);
+          dispatchDirect(pass, engine, J.proj, D);
+        }
+        const mlpTo = engine.debugMlpTo;
+        if (!engine.debugNoMlp && (mlpTo == null || li < mlpTo)) {
+          dispatchNorm(pass, engine, J.norm2);
+          dispatchDirect(pass, engine, J.w13, 2 * c.dFf);
+          dispatchSilu(pass, engine, c.dFf);
+          dispatchDirect(pass, engine, J.w2, D);
+        }
       }
-      const mlpTo = engine.debugMlpTo;
-      if (!engine.debugNoMlp && (mlpTo == null || li < mlpTo)) {
-        if (J.fc != null) dispatchGemv(pass, engine, J.fc, c.dFf);
-        else dispatchGemv(pass, engine, J.w13, 2 * c.dFf);
-        dispatchGemv(pass, engine, J.w2, D);
-      }
-    }
 
-    const last = ti === n - 1;
-    const want = logitsEach || (last && doLogits);
-    if (want) {
-      dispatchGemv(pass, engine, engine.jLm, c.vocabSize);
-      pass.setPipeline(engine.pArgmax);
-      pass.setBindGroup(0, engine.bgArgmax, [ti * JOB_STRIDE]);
-      pass.dispatchWorkgroups(1);
+      const last = ti === n - 1;
+      const want = logitsEach || (last && doLogits);
+      if (want) {
+        dispatchNorm(pass, engine, engine.normLm);
+        dispatchDirect(pass, engine, engine.jLm, c.vocabSize);
+        pass.setPipeline(engine.pArgmax);
+        pass.setBindGroup(0, engine.bgArgmax, [ti * JOB_STRIDE]);
+        pass.dispatchWorkgroups(1);
+      }
+    } else {
+      const nL = engine.debugMaxLayers != null ? engine.debugMaxLayers : c.nLayers;
+      for (let li = 0; li < nL; li++) {
+        const J = engine.layerJobs[li];
+        if (!engine.debugNoAttn) {
+          dispatchGemv(pass, engine, J.qkv, QKV);
+          pass.setPipeline(engine.pAttn);
+          pass.setBindGroup(0, engine.bgAttn, [ti * JOB_STRIDE, J.attn * JOB_STRIDE]);
+          pass.dispatchWorkgroups(1);
+          dispatchGemv(pass, engine, J.proj, D);
+        }
+        const mlpTo = engine.debugMlpTo;
+        if (!engine.debugNoMlp && (mlpTo == null || li < mlpTo)) {
+          if (J.fc != null) dispatchGemv(pass, engine, J.fc, c.dFf);
+          else dispatchGemv(pass, engine, J.w13, 2 * c.dFf);
+          dispatchGemv(pass, engine, J.w2, D);
+        }
+      }
+
+      const last = ti === n - 1;
+      const want = logitsEach || (last && doLogits);
+      if (want) {
+        dispatchGemv(pass, engine, engine.jLm, c.vocabSize);
+        pass.setPipeline(engine.pArgmax);
+        pass.setBindGroup(0, engine.bgArgmax, [ti * JOB_STRIDE]);
+        pass.dispatchWorkgroups(1);
+      }
     }
   }
   return n;
