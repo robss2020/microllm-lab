@@ -126,7 +126,7 @@
           </div>
         </div>
 
-        <nav class="tabs" role="tablist">
+        <nav class="tabs top-tabs" role="tablist" aria-label="Main navigation">
           <button type="button" data-tab="chat" aria-selected="true">Chat</button>
           <button type="button" data-tab="bench">Benchmarks</button>
           <button type="button" data-tab="compare">Compare & Certificate</button>
@@ -163,6 +163,17 @@
                 <button class="btn primary" id="send" data-busy>Generate</button>
                 <label>max new <input id="max-new" type="text" value="64" style="width:4.5rem" /></label>
               </div>
+            </div>
+
+            <!-- Bottom navigation repeated below chat submission -->
+            <div class="bottom-nav-row" id="chat-bottom-nav">
+              <span class="bottom-nav-label">Next action:</span>
+              <nav class="tabs bottom-tabs" role="tablist" aria-label="Chat bottom navigation">
+                <button type="button" data-tab="chat" aria-selected="true">Chat</button>
+                <button type="button" data-tab="bench">Benchmarks</button>
+                <button type="button" data-tab="compare">Compare & Certificate</button>
+                <button type="button" data-tab="studio">Custom eval</button>
+              </nav>
             </div>
           </section>
 
@@ -214,6 +225,17 @@
               </div>
             </div>
             <div id="bench-table"></div>
+
+            <!-- Bottom navigation repeated at bottom of benchmarks -->
+            <div class="bottom-nav-row">
+              <span class="bottom-nav-label">Next action:</span>
+              <nav class="tabs bottom-tabs" role="tablist" aria-label="Benchmarks bottom navigation">
+                <button type="button" data-tab="chat">Chat</button>
+                <button type="button" data-tab="bench" aria-selected="true">Benchmarks</button>
+                <button type="button" data-tab="compare">Compare & Certificate</button>
+                <button type="button" data-tab="studio">Custom eval</button>
+              </nav>
+            </div>
           </section>
 
           <section id="panel-compare" class="panel">
@@ -305,6 +327,17 @@
                 <p id="cert-status-msg" class="cert-status-msg"></p>
               </div>
             </div>
+
+            <!-- Bottom navigation repeated at bottom of compare & certificate -->
+            <div class="bottom-nav-row">
+              <span class="bottom-nav-label">Next action:</span>
+              <nav class="tabs bottom-tabs" role="tablist" aria-label="Compare bottom navigation">
+                <button type="button" data-tab="chat">Chat</button>
+                <button type="button" data-tab="bench">Benchmarks</button>
+                <button type="button" data-tab="compare" aria-selected="true">Compare & Certificate</button>
+                <button type="button" data-tab="studio">Custom eval</button>
+              </nav>
+            </div>
           </section>
 
           <section id="panel-studio" class="panel">
@@ -330,6 +363,17 @@
             <div class="callout">
               <h3>Function form</h3>
               <pre class="log" id="ex-fn"></pre>
+            </div>
+
+            <!-- Bottom navigation repeated at bottom of custom eval studio -->
+            <div class="bottom-nav-row">
+              <span class="bottom-nav-label">Next action:</span>
+              <nav class="tabs bottom-tabs" role="tablist" aria-label="Custom eval bottom navigation">
+                <button type="button" data-tab="chat">Chat</button>
+                <button type="button" data-tab="bench">Benchmarks</button>
+                <button type="button" data-tab="compare">Compare & Certificate</button>
+                <button type="button" data-tab="studio" aria-selected="true">Custom eval</button>
+              </nav>
             </div>
           </section>
         </main>
