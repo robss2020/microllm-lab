@@ -142,6 +142,50 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+.bench-progress-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 14px;
+  background: color-mix(in oklab, var(--accent) 12%, var(--bg-elevated));
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+.bench-progress-header.hidden {
+  display: none;
+}
+.bench-pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+@keyframes pulse-glow {
+  0%, 100% { border-color: color-mix(in oklab, var(--accent) 35%, var(--border)); }
+  50% { border-color: var(--accent); }
+}
+.bench-hdr-title {
+  font-weight: 700;
+  color: var(--fg);
+}
+.bench-hdr-detail {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
 .model-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
@@ -199,9 +243,38 @@ button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
   font-family: var(--font-mono);
   color: var(--fg-subtle);
   min-height: 2.4em;
+.model-card.is-benchmarking {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg)) !important;
 }
-.model-card-status[data-kind="have"] { color: var(--ok); }
-.model-card-status[data-kind="busy"] { color: var(--warn); }
+.model-card-bench {
+  display: none;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--accent) 15%, var(--bg-subtle));
+  color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+  font-weight: 600;
+  line-height: 1.35;
+  animation: pulse-badge 1.8s ease-in-out infinite;
+}
+@keyframes pulse-badge {
+  0%, 100% { border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+  50% { border-color: var(--accent); }
+}
+.model-card.is-benchmarking .model-card-bench {
+  display: block;
+}
+.model-card.is-bench-done .model-card-bench {
+  display: block;
+  animation: none;
+  background: color-mix(in oklab, var(--ok) 12%, var(--bg-subtle));
+  color: var(--ok);
+  border-color: color-mix(in oklab, var(--ok) 35%, transparent);
+}
 .model-card-action {
   width: 100%;
   min-height: 40px;
