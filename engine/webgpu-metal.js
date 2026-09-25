@@ -125,8 +125,26 @@ fn dot_full(row: u32, cols: u32, packOff: u32, scaleOff: u32) -> f32 {
     return s;
   }
   let ng = cols / 32u;
+  let rowU = cols / 8u;
+  var base = packOff + row * rowU;
+  var scOff = scaleOff + row * ng;
+  var xb = 0u;
   var acc = 0.0;
-  for (var g = 0u; g < ng; g++) { acc += q4group(row, g, cols, packOff, scaleOff); }
+  for (var g = 0u; g < ng; g++) {
+    let sc = SC[scOff + g];
+    var s = 0.0;
+    for (var w = 0u; w < 4u; w++) {
+      let word = PACK[base + w];
+      let p = xb + w * 8u;
+      let lo = q4nibs(word);
+      let hi = q4nibs(word >> 16u);
+      s += dot(lo, vec4<f32>(src[p], src[p + 1u], src[p + 2u], src[p + 3u]));
+      s += dot(hi, vec4<f32>(src[p + 4u], src[p + 5u], src[p + 6u], src[p + 7u]));
+    }
+    acc += s * sc;
+    base += 4u;
+    xb += 32u;
+  }
   return acc;
 }
 fn dot_slice(row: u32, cols: u32, packOff: u32, scaleOff: u32, kid: u32, stride: u32) -> f32 {
@@ -1048,7 +1066,7 @@ export async function initMetal(engine) {
 }
 
 function dispatchGemv(pass, engine, jobId, rows) {
-  const fat = rows >= 4096;
+  const fat = rows >= 4096 || (engine.cfg?.dModel >= 960 && rows >= 960);
   pass.setPipeline(fat ? engine.pGemvFat : engine.pGemvCoop);
   pass.setBindGroup(0, engine.bgGemv, [jobId * JOB_STRIDE]);
   if (fat) pass.dispatchWorkgroups(Math.ceil(rows / GEMV_WG));

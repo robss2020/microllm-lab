@@ -45,6 +45,7 @@ const state = {
   downloads: Object.create(null),
   downloadGen: Object.create(null),
   downloadPromises: Object.create(null),
+  benchStatus: Object.create(null),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -322,8 +323,13 @@ function renderModels() {
     sel.appendChild(opt);
 
     const st = downloadStatus(m);
+    const bStatus = state.benchStatus?.[m.id];
+    let extraCls = "";
+    if (bStatus?.running) extraCls += " is-benchmarking";
+    else if (bStatus?.done) extraCls += " is-bench-done";
+
     const card = document.createElement("article");
-    card.className = "model-card" + (st.kind === "have" ? " is-have" : "") + (st.kind === "busy" ? " is-busy" : "");
+    card.className = "model-card" + (st.kind === "have" ? " is-have" : "") + (st.kind === "busy" ? " is-busy" : "") + extraCls;
     card.dataset.id = m.id;
     card.setAttribute("aria-selected", m.id === state.active ? "true" : "false");
     card.innerHTML = `<button type="button" class="model-card-pick">
@@ -333,6 +339,7 @@ function renderModels() {
       </button>
       <div class="model-card-bar" aria-hidden="true"><i style="width:${st.kind === "have" ? 100 : st.pct || 0}%"></i></div>
       <div class="model-card-status" data-kind="${st.kind}">${st.text}</div>
+      <div class="model-card-bench" id="bench-badge-${m.id}" style="${bStatus ? "display:block;" : ""}">${bStatus?.text || ""}</div>
       <button type="button" class="btn ghost model-card-action" data-act="${st.kind === "have" ? "discard" : "download"}" ${st.kind === "busy" ? "disabled" : ""}>${st.kind === "busy" ? "Loading…" : st.kind === "have" ? "Unload" : "Load"}</button>`;
     card.querySelector(".model-card-pick").addEventListener("click", () => setActive(m.id));
     card.querySelector(".model-card-action").addEventListener("click", (e) => {
@@ -1082,51 +1089,156 @@ function recordCompare(id, results, wallMs) {
 async function runSuite(suite, ids) {
   const results = [];
   setBusy(true);
+  state.benchStatus = state.benchStatus || Object.create(null);
+
+  // 1. Scroll up smoothly to the model cards
+  const modelBar = $("model-bar");
+  if (modelBar) {
+    modelBar.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // 2. Show the Benchmarking header above the cards
+  const benchHeader = $("bench-progress-header");
+  const benchDetail = $("bench-hdr-detail");
+  if (benchHeader) benchHeader.classList.remove("hidden");
+
+  const totalTests = suite.tests.length;
   const tSuite = performance.now();
-  for (const id of ids) {
+
+  for (let mi = 0; mi < ids.length; mi++) {
+    const id = ids[mi];
+    const mObj = modelById(id);
+    const mName = mObj?.name || id;
+
     setActive(id);
+
     try {
       await ensureLoaded();
     } catch (e) {
       results.push({ id: "load", dtype: id, pass: false, detail: e.message, totalMs: 0 });
       continue;
     }
+
     const tModel = performance.now();
     const modelRows = [];
-    for (const test of suite.tests) {
-      log(`bench ${id} · ${test.id}`);
-      try {
-        generateOnce._onToken = null;
-        const maxTokens = test.maxNewTokens || suite.maxNewTokens || 48;
-        const genOpts = test.opts || {};
-        const r = await generateOnce(test.prompt, maxTokens, genOpts);
-        const judged = test.check(r.text, r) || { pass: false };
-        const row = {
-          id: test.id,
-          dtype: id,
-          pass: !!judged.pass,
-          score: judged.score,
-          detail: judged.detail || r.text.slice(0, 80),
-          tokPerS: r.tokPerS,
-          totalMs: r.totalMs,
-          stopReason: r.stopReason,
-          repeat: fourGramRepeat(r.text),
-          tokens: r.generatedIds?.length || 0,
-        };
-        results.push(row);
-        modelRows.push(row);
-        state.lastMetrics = { tokPerS: r.tokPerS, ttftMs: r.ttftMs, totalMs: r.totalMs, stopReason: r.stopReason };
-        renderHud();
-      } catch (e) {
-        results.push({ id: test.id, dtype: id, pass: false, detail: e.message, totalMs: 0 });
-      }
+    let passedCount = 0;
+    let currentTestIdx = 0;
+
+    state.benchStatus[id] = {
+      running: true,
+      done: false,
+      passed: 0,
+      total: totalTests,
+      text: `Benchmarking... 0/${totalTests} passed · 0.0s`,
+    };
+
+    const card = document.querySelector(`.model-card[data-id="${id}"]`);
+    if (card) {
+      card.classList.remove("is-bench-done");
+      card.classList.add("is-benchmarking");
     }
-    recordCompare(id, modelRows, performance.now() - tModel);
+
+    const updateCardBadge = () => {
+      const elapsedSec = ((performance.now() - tModel) / 1000).toFixed(1);
+      const text = `Benchmarking... ${passedCount}/${totalTests} passed · ${elapsedSec}s`;
+      if (state.benchStatus[id]) state.benchStatus[id].text = text;
+      const badge = $(`bench-badge-${id}`);
+      if (badge) {
+        badge.textContent = text;
+        badge.style.display = "block";
+      }
+      if (benchDetail) {
+        const totalElapsed = ((performance.now() - tSuite) / 1000).toFixed(1);
+        const modelProgress = ids.length > 1 ? ` (${mi + 1}/${ids.length})` : "";
+        benchDetail.textContent = `Evaluating ${mName}${modelProgress} · Test ${currentTestIdx + 1}/${totalTests} · ${totalElapsed}s elapsed`;
+      }
+    };
+
+    updateCardBadge();
+    const liveTimer = setInterval(updateCardBadge, 100);
+
+    try {
+      for (let ti = 0; ti < suite.tests.length; ti++) {
+        currentTestIdx = ti;
+        const test = suite.tests[ti];
+        log(`bench ${id} · ${test.id}`);
+        updateCardBadge();
+        try {
+          generateOnce._onToken = null;
+          const maxTokens = test.maxNewTokens || suite.maxNewTokens || 48;
+          const genOpts = test.opts || {};
+          const r = await generateOnce(test.prompt, maxTokens, genOpts);
+          const judged = test.check(r.text, r) || { pass: false };
+          if (judged.pass) passedCount++;
+          const row = {
+            id: test.id,
+            dtype: id,
+            pass: !!judged.pass,
+            score: judged.score,
+            detail: judged.detail || r.text.slice(0, 80),
+            tokPerS: r.tokPerS,
+            totalMs: r.totalMs,
+            stopReason: r.stopReason,
+            repeat: fourGramRepeat(r.text),
+            tokens: r.generatedIds?.length || 0,
+          };
+          results.push(row);
+          modelRows.push(row);
+          state.lastMetrics = { tokPerS: r.tokPerS, ttftMs: r.ttftMs, totalMs: r.totalMs, stopReason: r.stopReason };
+          renderHud();
+        } catch (e) {
+          results.push({ id: test.id, dtype: id, pass: false, detail: e.message, totalMs: 0 });
+        }
+        updateCardBadge();
+      }
+    } finally {
+      clearInterval(liveTimer);
+    }
+
+    const modelWall = performance.now() - tModel;
+    const modelSec = (modelWall / 1000).toFixed(1);
+    state.benchStatus[id] = {
+      running: false,
+      done: true,
+      passed: passedCount,
+      total: totalTests,
+      text: `✓ Completed · ${passedCount}/${totalTests} passed (${modelSec}s)`,
+    };
+    if (card) {
+      card.classList.remove("is-benchmarking");
+      card.classList.add("is-bench-done");
+    }
+    const badge = $(`bench-badge-${id}`);
+    if (badge) {
+      badge.textContent = state.benchStatus[id].text;
+      badge.style.display = "block";
+    }
+
+    recordCompare(id, modelRows, modelWall);
   }
+
   setBusy(false);
   suiteRows(suite, results);
-  log(`suite wall ${(performance.now() - tSuite) / 1000}s  backend=${state.backend}`);
+  log(`suite wall ${((performance.now() - tSuite) / 1000).toFixed(1)}s  backend=${state.backend}`);
   updateEstimate();
+
+  // 3. Hide progress header
+  if (benchHeader) benchHeader.classList.add("hidden");
+
+  // 4. Switch to results tab if needed and smoothly scroll down to results
+  if (ids.length > 1) {
+    setTab("compare");
+  } else {
+    setTab("bench");
+  }
+
+  setTimeout(() => {
+    const target = ids.length > 1
+      ? ($("compare-summary-banner") || $("panel-compare"))
+      : ($("bench-summary-banner") || $("bench-table") || $("panel-bench"));
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 120);
+
   return results;
 }
 
