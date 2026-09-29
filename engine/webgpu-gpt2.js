@@ -54,8 +54,16 @@ struct StepParams {
 var<workgroup> src: array<f32, 3072>;
 var<workgroup> red: array<f32, 256>;
 
-fn k_off(li: u32, t: u32, e: u32) -> u32 { return (li * MS + t) * D + e; }
-fn v_off(li: u32, t: u32, e: u32) -> u32 { return NL * MS * D + (li * MS + t) * D + e; }
+fn k_off(li: u32, t: u32, e: u32) -> u32 {
+  let safe_t = min(t, MS - 1u);
+  let safe_li = min(li, NL - 1u);
+  return (safe_li * MS + safe_t) * D + min(e, D - 1u);
+}
+fn v_off(li: u32, t: u32, e: u32) -> u32 {
+  let safe_t = min(t, MS - 1u);
+  let safe_li = min(li, NL - 1u);
+  return NL * MS * D + (safe_li * MS + safe_t) * D + min(e, D - 1u);
+}
 
 fn q4nibs(word: u32) -> vec4<f32> {
   return vec4<f32>(
@@ -132,7 +140,8 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     let word = PACK[lmP + tok * rowU + i / 8u];
     let nib = (word >> ((i % 8u) * 4u)) & 15u;
     let emb = ((f32(nib) - 8.0) * sc) / SC[scFac + i];
-    SCR[X_OFF + i] = emb + SC[wpe + pos * D + i];
+    let safe_pos = min(pos, MS - 1u);
+    SCR[X_OFF + i] = emb + SC[wpe + safe_pos * D + min(i, D - 1u)];
     i += 256u;
   }
   workgroupBarrier();
@@ -194,7 +203,7 @@ fn step_main(@builtin(local_invocation_id) lidv: vec3<u32>) {
     workgroupBarrier();
 
     // Multi-head Attention
-    let seq = pos + 1u;
+    let seq = min(pos + 1u, MS);
     let scale = 0.125; // 1.0 / sqrt(64.0)
 
     // Compute scores Q * K
@@ -541,17 +550,18 @@ export class GpuGpt2Engine {
     d.queue.writeBuffer(this.bOFF, 0, new Uint32Array(offsets));
 
     const mod = d.createShaderModule({ code: WGSL_GPT2, label: "GPT2_Module" });
+    const stageCompute = typeof GPUShaderStage !== "undefined" ? GPUShaderStage.COMPUTE : 4;
     this.bgl = d.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
-        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 0, visibility: stageCompute, buffer: { type: "read-only-storage" } },
+        { binding: 1, visibility: stageCompute, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: stageCompute, buffer: { type: "storage" } },
+        { binding: 3, visibility: stageCompute, buffer: { type: "storage" } },
+        { binding: 4, visibility: stageCompute, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: stageCompute, buffer: { type: "uniform", hasDynamicOffset: true } },
+        { binding: 6, visibility: stageCompute, buffer: { type: "uniform", hasDynamicOffset: true } },
+        { binding: 7, visibility: stageCompute, buffer: { type: "storage" } },
+        { binding: 8, visibility: stageCompute, buffer: { type: "storage" } },
       ],
     });
     const layout = d.createPipelineLayout({ bindGroupLayouts: [this.bgl] });
@@ -581,14 +591,22 @@ export class GpuGpt2Engine {
   }
 
   async generate(ids, { maxNewTokens = 64, eosId = 50256, onToken = null } = {}) {
+    const maxSeq = 1024;
+    const maxPrompt = Math.max(1, maxSeq - maxNewTokens - 1);
+    if (ids.length > maxPrompt) {
+      console.warn(`[MicroLLM GPT-2] Truncating prompt tokens from ${ids.length} to ${maxPrompt} to prevent KV overflow (maxSeq: ${maxSeq})`);
+      ids = ids.slice(ids.length - maxPrompt);
+    }
     const d = this.device;
     const t0 = performance.now();
 
-    // Initialize history buffer with prompt tokens for context
-    d.queue.writeBuffer(this.bHIST, 0, new Uint32Array(ids));
+    // Initialize history buffer with prompt tokens for context (bHIST size is 2048 u32)
+    const histIds = ids.slice(-2048);
+    d.queue.writeBuffer(this.bHIST, 0, new Uint32Array(histIds));
 
     // 1. Prefill
     for (let i = 0; i < ids.length; i++) {
+      if (i >= maxSeq - 1) break;
       const isLast = i === ids.length - 1;
       d.queue.writeBuffer(this.bStep, 0, new Uint32Array([i, ids[i], 0, 12]));
 

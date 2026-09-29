@@ -138,7 +138,14 @@ async function loadModel(msg) {
 
 async function generate(prompt, maxNew, opts = {}) {
   if (!cpu && !gpu) throw new Error("no model loaded");
-  const ids = encodeMessages(tokenizer, [{ role: "user", content: prompt }], activeCard);
+  let ids = encodeMessages(tokenizer, [{ role: "user", content: prompt }], activeCard);
+  const maxSeq = activeCard.maxSeqLen || (cpu?.cfg?.maxSeqLen || 2048);
+  const maxPrompt = Math.max(1, maxSeq - maxNew - 4);
+  if (ids.length > maxPrompt) {
+    const hasBos = ids[0] === (activeCard.bosId ?? SPECIAL.BOS);
+    const tail = ids.slice(ids.length - (maxPrompt - (hasBos ? 1 : 0)));
+    ids = hasBos ? [ids[0], ...tail] : tail;
+  }
   const engine = gpu || cpu;
   const t0 = performance.now();
   const eosId = opts.ignoreEos ? -1 : (activeCard.eosId ?? SPECIAL.EOS);

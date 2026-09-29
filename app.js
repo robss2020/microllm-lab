@@ -363,10 +363,22 @@ function renderModels() {
         ? ` · <a href="${active.sourceUrl}" target="_blank" rel="noopener">${active.source}</a>`
         : "";
       const have = state.cached.has(active.id);
-      story.innerHTML = `<h3>${active.name}</h3>
-        <p class="meta">${active.maker || ""} · ${active.year || ""} · ${active.license || ""}${href}</p>
-        <p>${active.story || active.blurb || ""}</p>
-        <p class="meta">${have ? "Weights are loaded on this device." : "Weights are not loaded yet."}</p>`;
+      story.innerHTML = `
+        <div class="model-story-header">
+          <div class="model-story-title-row">
+            <h2 class="model-story-heading">Optional reading</h2>
+            <div class="model-story-selected-pill">
+              <span class="selected-dot" aria-hidden="true"></span>
+              Selected model: <strong>${active.name}</strong>
+            </div>
+          </div>
+        </div>
+        <div class="model-story-body">
+          <h3>${active.name}</h3>
+          <p class="meta">${active.maker || ""} · ${active.year || ""} · ${active.license || ""}${href}</p>
+          <p class="model-story-desc">${active.story || active.blurb || ""}</p>
+          <p class="meta status-meta">${have ? "✓ Weights are cached in browser IndexedDB on this device." : "Weights are not loaded yet."}</p>
+        </div>`;
     }
   }
   renderStorageButtons();
@@ -483,7 +495,8 @@ async function ensureLoaded() {
       const ua = navigator.userAgent || "";
       const isFirefox = /Firefox|FxiOS/i.test(ua);
       const isSafari = !isFirefox && /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR/i.test(ua);
-      if (isFirefox || isSafari) {
+      const hasWebGpuApi = !!globalThis.navigator?.gpu;
+      if (!hasWebGpuApi && (isFirefox || isSafari)) {
         const browserLabel = isFirefox ? "Firefox" : "Safari";
         $("gpu-name").innerHTML = `Adapter: none (${browserLabel} WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
         $("btn-show-webgpu-help")?.addEventListener("click", () => {
@@ -531,7 +544,14 @@ async function ensureLoaded() {
 
 async function generateOnGpu(prompt, maxNew, opts = {}) {
   const tok = await getTokenizer();
-  const ids = encodeMessages(tok, [{ role: "user", content: prompt }], state.card || {});
+  let ids = encodeMessages(tok, [{ role: "user", content: prompt }], state.card || {});
+  const maxSeq = state.card?.maxSeqLen || 2048;
+  const maxPrompt = Math.max(1, maxSeq - maxNew - 4);
+  if (ids.length > maxPrompt) {
+    const hasBos = ids[0] === (state.card?.bosId ?? SPECIAL.BOS);
+    const tail = ids.slice(ids.length - (maxPrompt - (hasBos ? 1 : 0)));
+    ids = hasBos ? [ids[0], ...tail] : tail;
+  }
   const t0 = performance.now();
   const eosId = opts.ignoreEos ? -1 : (state.card?.eosId ?? SPECIAL.EOS);
   const stream = !!generateOnce._onToken;
@@ -588,8 +608,12 @@ function generateOnce(prompt, maxNew, opts = {}) {
 }
 
 async function onSend() {
-  const prompt = $("prompt").value.trim();
+  let prompt = $("prompt").value.trim();
   if (!prompt) return;
+  if (prompt.length > 32768) {
+    prompt = prompt.slice(prompt.length - 32768);
+    log("Notice: Prompt trimmed to fit context window.");
+  }
   try {
     await ensureLoaded();
   } catch (e) {
@@ -1373,12 +1397,16 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null, mockGpu = nul
   const isFirefox = /Firefox|FxiOS/i.test(ua);
   const isSafari = !isFirefox && /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR/i.test(ua);
   const isIOS = /iPhone|iPad|iPod/i.test(ua);
-  const isWindows = /Windows|Win32|Win64/i.test(ua) || (!/Mac/i.test(ua) && /Win/i.test(navigator.platform || ""));
-  const isMac = !isWindows && (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(navigator.platform || ""));
-  const isLinux = !isWindows && !isMac && /Linux/i.test(ua) && !/Android/i.test(ua);
+  const platform = mockUa ? "" : (navigator.platform || "");
+  const isWindows = /Windows|Win32|Win64/i.test(ua) || (!/Mac/i.test(ua) && /Win/i.test(platform));
+  const isMac = !isWindows && (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(platform));
+  const isLinux = !isWindows && !isMac && (/Linux/i.test(ua) || /Linux/i.test(platform)) && !/Android/i.test(ua);
 
   const g = mockGpu || (globalThis.__mockWebGpu !== undefined ? globalThis.__mockWebGpu : await tryWebGpu());
   if (g.ok) {
+    if ($("gpu-name") && ($("gpu-name").textContent.includes("not queried yet") || $("gpu-name").textContent.includes("none"))) {
+      $("gpu-name").textContent = `Adapter: ${g.vendor || ""} (${g.name || "WebGPU"})`;
+    }
     if (forceShow) {
       noticeEl.className = "webgpu-notice success";
       noticeEl.hidden = false;
@@ -1404,20 +1432,23 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null, mockGpu = nul
   }
 
   // WebGPU is NOT enabled
-  if (isFirefox) {
+  const hasGpuApi = !!globalThis.navigator?.gpu;
+  if (!hasGpuApi && isFirefox) {
     $("gpu-name").innerHTML = `Adapter: none (Firefox WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
     $("btn-show-webgpu-help")?.addEventListener("click", () => {
       sessionStorage.removeItem("dismissed_webgpu_notice");
       checkWebGpuNotice(true);
       $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
     });
-  } else if (isSafari) {
+  } else if (!hasGpuApi && isSafari) {
     $("gpu-name").innerHTML = `Adapter: none (Safari WebGPU disabled · <button type="button" id="btn-show-webgpu-help" style="background:none;border:none;color:var(--warn);padding:0;font:inherit;text-decoration:underline;cursor:pointer">Setup guide</button>)`;
     $("btn-show-webgpu-help")?.addEventListener("click", () => {
       sessionStorage.removeItem("dismissed_webgpu_notice");
       checkWebGpuNotice(true);
       $("webgpu-notice")?.scrollIntoView({ behavior: "smooth" });
     });
+  } else {
+    $("gpu-name").textContent = `Adapter: none (${g.reason || "CPU fallback"})`;
   }
 
   const isDismissed = sessionStorage.getItem("dismissed_webgpu_notice") === "1";
@@ -1547,13 +1578,22 @@ async function checkWebGpuNotice(forceShow = false, mockUa = null, mockGpu = nul
           <div class="step-content">
             Search for <code class="click-copy" data-copy="gfx.webgpu.ignore-blocklist" title="Click to copy">gfx.webgpu.ignore-blocklist</code> and toggle it to <strong>true</strong>.
             <button type="button" class="copy-pill" data-copy="gfx.webgpu.ignore-blocklist">Copy</button>
-            <span class="step-tip">(Enables Vulkan graphics backend on Linux)</span>
+            <span class="step-tip">(Enables WebGPU graphics backend on Linux)</span>
           </div>
         </li>
         <li>
           <span class="step-num">5</span>
           <div class="step-content">
-            <strong>Restart Firefox</strong>, then reload this page.
+            <em>(Recommended on Linux)</em> Search for <code class="click-copy" data-copy="gfx.webgpu.force-enabled" title="Click to copy">gfx.webgpu.force-enabled</code> and set to <strong>true</strong>.
+            <button type="button" class="copy-pill" data-copy="gfx.webgpu.force-enabled">Copy</button>
+            <span class="step-tip">(Forces Vulkan adapter acquisition on X11 and Wayland)</span>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">6</span>
+          <div class="step-content">
+            <strong>Restart Firefox completely</strong>, then reload this page.
+            <span class="step-tip">(Ensure Vulkan drivers are installed, e.g. <code>mesa-vulkan-drivers</code> or vendor drivers)</span>
           </div>
         </li>
       `;
@@ -1790,6 +1830,10 @@ async function boot() {
     setTab("bench");
   });
   $("btn-get-started")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    $("model-bar")?.scrollIntoView({ behavior: "smooth" });
+  });
+  $("hero-tldr-wrap")?.addEventListener("click", (e) => {
     e.preventDefault();
     $("model-bar")?.scrollIntoView({ behavior: "smooth" });
   });

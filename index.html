@@ -67,35 +67,67 @@
             <span class="brand-tag sub">WebGPU · Zero-Server · Q4 Quantized</span>
           </div>
           <h1>MicroLLM lab</h1>
+          <div class="hero-tldr-wrap" id="hero-tldr-wrap" role="note" aria-label="Quick start summary">
+            <p class="hero-tldr">
+              <span class="tldr-glow">tl;dr: click &quot;load&quot; on any model below, scroll down and start chatting.</span>
+            </p>
+          </div>
+          <script>
+            (function() {
+              function initShimmer() {
+                var el = document.querySelector(".tldr-glow");
+                if (!el) return;
+                var pos = 200;
+                var last = performance.now();
+                function tick(now) {
+                  var dt = Math.min((now - last) / 1000, 0.1);
+                  last = now;
+                  pos -= dt * 133.3;
+                  if (pos <= -200) pos = 200;
+                  el.style.backgroundPosition = pos.toFixed(1) + "% 50%";
+                  requestAnimationFrame(tick);
+                }
+                requestAnimationFrame(tick);
+              }
+              if (document.readyState === "loading") {
+                document.addEventListener("DOMContentLoaded", initShimmer);
+              } else {
+                initShimmer();
+              }
+            })();
+          </script>
           <p class="tagline">
             Run, benchmark, and compare <strong>Small Language Models (SLMs)</strong> directly in your browser with hardware-accelerated <strong>WebGPU</strong> — 100% private, zero server cost, zero accounts.
           </p>
 
-          <!-- Why Small Models Matter & Technical Primer -->
-          <div class="intro-grid">
-            <div class="intro-card">
-              <h3>🎯 Why Small Language Models?</h3>
-              <p>
-                Frontier models (GPT-4, Claude) cost millions to serve and add network latency. Compact models (25M–360M) operate as an ultra-fast, efficient edge layer:
-              </p>
-              <ul>
-                <li><strong>Edge Computing & Privacy:</strong> Runs entirely on your phone or laptop. No prompt or user data ever leaves your device.</li>
-                <li><strong>Fast Triage & Task Routing:</strong> Classify queries, filter spam, and extract intent in milliseconds to decide if an expensive cloud LLM is even needed.</li>
-                <li><strong>Zero Cloud Cost:</strong> Infinite concurrency powered by client GPUs with no API bills.</li>
-                <li><strong>Ultra-Low Latency:</strong> Sub-10ms time-to-first-token for instantaneous autocomplete and real-time agents.</li>
-              </ul>
-            </div>
+          <!-- Why Small Models Matter & Technical Primer (Optional reading) -->
+          <div class="optional-reading-container">
+            <h2 class="optional-reading-title">Optional reading</h2>
+            <div class="intro-grid">
+              <div class="intro-card">
+                <h3>🎯 Why Small Language Models?</h3>
+                <p>
+                  Frontier models (ChatGPT, Claude) cost millions to serve and add network latency. Compact models (25M–360M) operate as an ultra-fast, efficient edge layer:
+                </p>
+                <ul>
+                  <li><strong>Edge Computing & Privacy:</strong> Runs entirely on your phone or laptop. No prompt or user data ever leaves your device.</li>
+                  <li><strong>Fast Triage & Task Routing:</strong> Classify queries, filter spam, and extract intent in milliseconds to decide if an expensive cloud LLM is even needed.</li>
+                  <li><strong>Zero Cloud Cost:</strong> Infinite concurrency powered by client GPUs with no API bills.</li>
+                  <li><strong>Ultra-Low Latency:</strong> Sub-10ms time-to-first-token for instantaneous autocomplete and real-time agents.</li>
+                </ul>
+              </div>
 
-            <div class="intro-card">
-              <h3>🔍 Technical Vocabulary</h3>
-              <dl class="vocab-list">
-                <dt>Small Language Model (SLM)</dt>
-                <dd>A compact neural model (~25M–360M parameters) designed for efficient edge intelligence and specific tasks rather than broad trivia.</dd>
-                <dt>Q4 (4-bit Quantization)</dt>
-                <dd>Compressing weights from 16-bit floats to 4 bits per parameter, shrinking memory footprint by 75% so 100M+ models fit in ~50–84 MB of browser memory with near-lossless generation quality.</dd>
-                <dt>WebGPU</dt>
-                <dd>The modern W3C standard API that executes compute shaders directly on your hardware GPU (Apple Silicon Metal, DirectX 12, Vulkan) right inside your browser window.</dd>
-              </dl>
+              <div class="intro-card">
+                <h3>🔍 Technical Vocabulary</h3>
+                <dl class="vocab-list">
+                  <dt>Small Language Model (SLM)</dt>
+                  <dd>A compact neural model (~25M–360M parameters) designed for efficient edge intelligence and specific tasks rather than broad trivia.</dd>
+                  <dt>Q4 (4-bit Quantization)</dt>
+                  <dd>Compressing weights from 16-bit floats to 4 bits per parameter, shrinking memory footprint by 75% so 100M+ models fit in ~50–84 MB of browser memory with near-lossless generation quality.</dd>
+                  <dt>WebGPU</dt>
+                  <dd>The modern W3C standard API that executes compute shaders directly on your hardware GPU (Apple Silicon Metal, DirectX 12, Vulkan) right inside your browser window.</dd>
+                </dl>
+              </div>
             </div>
           </div>
 
@@ -105,7 +137,7 @@
             <div class="quickstart-steps">
               <div class="qs-step">
                 <span class="qs-num">1</span>
-                <div><strong>Load a model:</strong> Click <em>Load</em> on any model card below. It caches directly into your browser's private IndexedDB (no file download to disk).</div>
+                <div><strong>Load a model:</strong> Click <em>Load</em> on any model card below. It caches directly into your browser's private IndexedDB.</div>
               </div>
               <div class="qs-step">
                 <span class="qs-num">2</span>
@@ -162,7 +194,7 @@
             <div class="chips" id="prompt-chips"></div>
             <div class="chat" id="chat"></div>
             <div class="composer">
-              <textarea id="prompt" rows="3" placeholder="Write a user prompt. Ctrl/Cmd+Enter to send."></textarea>
+              <textarea id="prompt" rows="3" maxlength="65536" placeholder="Write a user prompt. Ctrl/Cmd+Enter to send."></textarea>
               <div class="row">
                 <button class="btn primary" id="send" data-busy>Generate</button>
                 <label>max new <input id="max-new" type="text" value="64" style="width:4.5rem" /></label>
@@ -408,12 +440,11 @@
       <footer class="foot">
         <span>
           Inspired by <a href="https://github.com/yangqi0/petitgpt">yangqi0/petitgpt</a>
-          · live
-          <a href="https://github.com/robss2020/microllm-lab">https://github.com/robss2020/microllm-lab</a>
           ·
-          <a href="https://taonexus.com/publicfiles/october2026/microllmlab.zip">current.zip (591 MB)</a>
+          <a href="https://github.com/robss2020/microllm-lab" target="_blank" rel="noopener">GitHub repository</a>
+          ·
+          <a href="https://taonexus.com/publicfiles/october2026/microllmlab.zip">Download this repo as a zip file (589 MB)</a>
         </span>
-        <span>Serve over HTTP. Do not open as file://.</span>
       </footer>
     </div>
     <script src="./vendor/chart.umd.min.js"></script>

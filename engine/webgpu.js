@@ -23,10 +23,10 @@ function scaledKind(kind) {
 }
 
 function isMetalGpu(info) {
-  const s = `${info?.vendor || ""} ${info?.name || ""} ${info?.architecture || ""}`.toLowerCase();
-  if (/apple|metal/.test(s)) return true;
-  const ua = globalThis.navigator?.userAgent || "";
-  return /Mac|iPhone|iPad/.test(ua);
+  // Use the modular split-kernel decoder across all platforms (Metal, DirectX 12, Vulkan).
+  // It compiles in milliseconds without hitting monolithic shader limits in HLSL/DirectX 12,
+  // and employs on-chip chained decoding to eliminate the per-token IPC mapAsync floor in Firefox.
+  return true;
 }
 
 function wantMetalSplit() {
@@ -455,13 +455,25 @@ var<workgroup> redi: array<u32, 256>;
 
 fn kv_elems() -> u32 { return NKV * MS * HD; }
 fn k_off(li: u32, h: u32, t: u32, d: u32) -> u32 {
-  return li * kv_elems() + (h * MS + t) * HD + d;
+  let safe_t = min(t, MS - 1u);
+  let safe_h = min(h, NKV - 1u);
+  let safe_li = min(li, NL - 1u);
+  return safe_li * kv_elems() + (safe_h * MS + safe_t) * HD + min(d, HD - 1u);
 }
 fn v_off(li: u32, h: u32, t: u32, d: u32) -> u32 {
-  return NL * kv_elems() + k_off(0u, h, t, d) + li * kv_elems();
+  let safe_t = min(t, MS - 1u);
+  let safe_h = min(h, NKV - 1u);
+  let safe_li = min(li, NL - 1u);
+  return NL * kv_elems() + safe_li * kv_elems() + (safe_h * MS + safe_t) * HD + min(d, HD - 1u);
 }
-fn cos_at(pos: u32, d: u32) -> f32 { return ROPE[pos * RD + d]; }
-fn sin_at(pos: u32, d: u32) -> f32 { return ROPE[MS * RD + pos * RD + d]; }
+fn cos_at(pos: u32, d: u32) -> f32 {
+  let safe_pos = min(pos, MS - 1u);
+  return ROPE[safe_pos * RD + min(d, RD - 1u)];
+}
+fn sin_at(pos: u32, d: u32) -> f32 {
+  let safe_pos = min(pos, MS - 1u);
+  return ROPE[MS * RD + safe_pos * RD + min(d, RD - 1u)];
+}
 fn id_at(i: u32) -> u32 {
   let v = params.ids[i / 4u];
   switch i % 4u {
@@ -589,7 +601,7 @@ fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
       }
       workgroupBarrier();
 
-      let seq = pos + 1u;
+      let seq = min(pos + 1u, MS);
       let scale = inverseSqrt(f32(HD));
       let rep = NH / NKV;
       var sidx = lid;
@@ -693,62 +705,107 @@ function buf(device, size, usage, label) {
   return device.createBuffer({ size: Math.max(Math.ceil(size / 16) * 16, 16), usage, label });
 }
 
-export async function tryWebGpu() {
+let _gpuInfoPromise = null;
+
+export async function tryWebGpu(forceRefresh = false) {
   if (!globalThis.navigator?.gpu) return { ok: false, reason: "WebGPU API not present" };
-  let adapter;
-  try {
-    adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-  } catch {
-    adapter = await navigator.gpu.requestAdapter();
-  }
-  if (!adapter) return { ok: false, reason: "No GPU adapter" };
-  const requiredLimits = {};
-  try {
-    requiredLimits.maxBufferSize = Math.min(adapter.limits.maxBufferSize, 2147483648);
-    requiredLimits.maxStorageBufferBindingSize = Math.min(
-      adapter.limits.maxStorageBufferBindingSize,
-      2147483648,
-    );
-    requiredLimits.maxUniformBufferBindingSize = Math.min(
-      adapter.limits.maxUniformBufferBindingSize || 65536,
-      65536,
-    );
-  } catch {
-    /* */
-  }
-  let device;
-  try {
-    device = await adapter.requestDevice({ requiredLimits });
-  } catch (e1) {
+  if (_gpuInfoPromise && !forceRefresh) {
     try {
-      device = await adapter.requestDevice();
-    } catch (e2) {
-      return { ok: false, reason: String(e2 || e1) };
+      const cached = await _gpuInfoPromise;
+      if (cached && cached.ok && cached.device && !cached.device.__lost) {
+        return cached;
+      }
+    } catch {
+      _gpuInfoPromise = null;
     }
   }
-  const info = adapter.info || {};
-  const features = [];
-  try {
-    for (const f of adapter.features) features.push(f);
-  } catch {
-    /* */
-  }
-  return {
-    ok: true,
-    adapter,
-    device,
-    name: info.device || info.description || "WebGPU",
-    vendor: info.vendor || "unknown",
-    architecture: info.architecture || "",
-    isFallbackAdapter: !!info.isFallbackAdapter,
-    features,
-    limits: {
-      maxBufferSize: adapter.limits.maxBufferSize,
-      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-      maxComputeWorkgroupSizeX: adapter.limits.maxComputeWorkgroupSizeX,
-      minUniformBufferOffsetAlignment: adapter.limits.minUniformBufferOffsetAlignment,
-    },
-  };
+
+  _gpuInfoPromise = (async () => {
+    let adapter = null;
+    try {
+      adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    } catch {}
+    if (!adapter) {
+      try {
+        adapter = await navigator.gpu.requestAdapter();
+      } catch {}
+    }
+    if (!adapter) {
+      try {
+        adapter = await navigator.gpu.requestAdapter({ powerPreference: "low-power" });
+      } catch {}
+    }
+    if (!adapter) return { ok: false, reason: "No GPU adapter" };
+
+    let device = null;
+    try {
+      const maxBuf = adapter?.limits?.maxBufferSize || 268435456;
+      const maxStorage = adapter?.limits?.maxStorageBufferBindingSize || 134217728;
+      const requiredLimits = {
+        maxBufferSize: Math.min(maxBuf, 2147483648),
+        maxStorageBufferBindingSize: Math.min(maxStorage, 2147483648),
+      };
+      if (adapter?.limits?.maxUniformBufferBindingSize) {
+        requiredLimits.maxUniformBufferBindingSize = Math.min(adapter.limits.maxUniformBufferBindingSize, 65536);
+      }
+      device = await adapter.requestDevice({ requiredLimits });
+    } catch {
+      try {
+        device = await adapter.requestDevice();
+      } catch (e2) {
+        try {
+          const freshAdapter = await navigator.gpu.requestAdapter();
+          if (freshAdapter) {
+            adapter = freshAdapter;
+            device = await freshAdapter.requestDevice();
+          } else {
+            return { ok: false, reason: String(e2) };
+          }
+        } catch (e3) {
+          return { ok: false, reason: String(e3 || e2) };
+        }
+      }
+    }
+
+    if (!device) return { ok: false, reason: "Failed to create GPU device" };
+
+    device.lost?.then((info) => {
+      console.warn("[webgpu] Device lost:", info.message || info);
+      device.__lost = true;
+      _gpuInfoPromise = null;
+    });
+
+    let info = {};
+    try {
+      info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {});
+    } catch {}
+
+    const features = [];
+    try {
+      for (const f of adapter.features || device.features || []) features.push(f);
+    } catch {}
+
+    const limits = {
+      maxBufferSize: adapter?.limits?.maxBufferSize || device?.limits?.maxBufferSize || 268435456,
+      maxStorageBufferBindingSize: adapter?.limits?.maxStorageBufferBindingSize || device?.limits?.maxStorageBufferBindingSize || 134217728,
+      maxComputeWorkgroupSizeX: adapter?.limits?.maxComputeWorkgroupSizeX || device?.limits?.maxComputeWorkgroupSizeX || 256,
+      minUniformBufferOffsetAlignment: adapter?.limits?.minUniformBufferOffsetAlignment || device?.limits?.minUniformBufferOffsetAlignment || 256,
+    };
+
+    return {
+      ok: true,
+      adapter,
+      device,
+      name: info?.device || info?.description || (info?.vendor ? `${info.vendor} GPU` : "WebGPU"),
+      vendor: info?.vendor || "WebGPU",
+      architecture: info?.architecture || "",
+      isFallbackAdapter: !!info?.isFallbackAdapter,
+      features,
+      limits,
+    };
+  })();
+
+  return _gpuInfoPromise;
 }
 
 function buildRope(maxSeq, headDim, theta, pct) {
@@ -988,7 +1045,8 @@ export class GpuPetitGPT {
     }
 
     const logOff = c.dModel * 2 + (c.dModel + 2 * c.nKvHeads * hd) + c.dModel + c.dFf * 2;
-    this.SCR = this._alloc((logOff + c.vocabSize + 64) * 4, storage, "SCR");
+    const maxAttnScratch = c.nHeads * c.maxSeqLen;
+    this.SCR = this._alloc((logOff + Math.max(c.vocabSize, maxAttnScratch) + 256) * 4, storage, "SCR");
     this.KV = this._alloc(2 * c.nLayers * c.nKvHeads * c.maxSeqLen * hd * 4, storage, "KV");
     const rope = buildRope(c.maxSeqLen, hd, c.ropeTheta, c.ropePct);
     if (c.arch === "gpt2") {
@@ -1104,6 +1162,12 @@ export class GpuPetitGPT {
   }
 
   async generate(ids, { maxNewTokens = 64, eosId = SPECIAL.EOS, onToken = null } = {}) {
+    const maxSeq = this.cfg?.maxSeqLen || 2048;
+    const maxPrompt = Math.max(1, maxSeq - maxNewTokens - 1);
+    if (ids.length > maxPrompt) {
+      console.warn(`[MicroLLM WebGPU] Truncating prompt tokens from ${ids.length} to ${maxPrompt} to prevent KV overflow (maxSeq: ${maxSeq})`);
+      ids = ids.slice(ids.length - maxPrompt);
+    }
     this.cacheLen = 0;
     const t0 = performance.now();
     const prompt = ids.slice();
@@ -1113,13 +1177,14 @@ export class GpuPetitGPT {
 
     const CHUNK = this.useMetalSplit ? METAL_MAX_TOK : MAX_IDS;
     for (let i = 0; i < prompt.length; ) {
+      if (i >= maxSeq - 1) break;
       const lastChunk = i + CHUNK >= prompt.length;
       const chunk = prompt.slice(i, Math.min(i + CHUNK, prompt.length));
       const r = await this._run(i, chunk, { doLogits: lastChunk, logitsEach: false });
       i += chunk.length;
       if (lastChunk) accepted.push(r[0]);
     }
-    this.cacheLen = prompt.length;
+    this.cacheLen = Math.min(prompt.length, maxSeq - 1);
     const ttft = performance.now() - t0;
     if (onToken) await onToken(accepted[0], { phase: "prefill", ms: ttft });
     if (accepted[0] === eosId) {
@@ -1135,16 +1200,13 @@ export class GpuPetitGPT {
     }
 
     if (this.useMetalSplit) {
-      // Chained on-chip decode: submits chunks up to METAL_MAX_TOK (64) tokens
-      // using on-chip CHAIN_TOK feedback without round-tripping to CPU on every token.
-      // This eliminates the 100ms per-token IPC mapAsync floor in Firefox and accelerates
-      // both chat and benchmark evaluations to peak hardware throughput (100–300+ tok/s)
-      // while maintaining exact stopping criteria when eosId is encountered.
       while (accepted.length < maxNewTokens) {
+        if (this.cacheLen >= maxSeq - 1) break;
         const x = accepted[accepted.length - 1];
         const pos = this.cacheLen;
         const chunkCap = (accepted.length <= 1 && eosId !== -1) ? 16 : METAL_MAX_TOK;
-        const n = Math.min(chunkCap, maxNewTokens - accepted.length);
+        const n = Math.min(chunkCap, maxNewTokens - accepted.length, maxSeq - 1 - pos);
+        if (n <= 0) break;
         const runIds = new Array(n);
         runIds[0] = x;
         for (let i = 1; i < n; i++) runIds[i] = CHAIN_TOK;
@@ -1164,7 +1226,7 @@ export class GpuPetitGPT {
       }
       return {
         generatedIds: accepted,
-        stopReason: accepted[accepted.length - 1] === eosId ? "eos" : "max_new_tokens",
+        stopReason: accepted[accepted.length - 1] === eosId ? "eos" : (this.cacheLen >= maxSeq - 1 ? "context_limit" : "max_new_tokens"),
         ttftMs: ttft,
         totalMs: performance.now() - t0,
         mode: this.mode,
@@ -1176,6 +1238,7 @@ export class GpuPetitGPT {
 
     const seq = prompt.concat(accepted);
     while (accepted.length < maxNewTokens) {
+      if (this.cacheLen >= maxSeq - 1) break;
       const x = accepted[accepted.length - 1];
       const pos = this.cacheLen;
       const draft = lookupDraft(seq, SPEC_K, NGRAM);
@@ -1219,11 +1282,18 @@ export class GpuPetitGPT {
   }
 
   destroy() {
-    try {
-      this.device.destroy();
-    } catch {
-      /* */
-    }
+    try { this.W?.destroy?.(); } catch {}
+    try { this.SCR?.destroy?.(); } catch {}
+    try { this.KV?.destroy?.(); } catch {}
+    try { this.ROPE?.destroy?.(); } catch {}
+    try { this.OUT?.destroy?.(); } catch {}
+    try { this.outStage?.destroy?.(); } catch {}
+    try { this.OFF?.destroy?.(); } catch {}
+    try { this.uMeta?.destroy?.(); } catch {}
+    try { this.SC?.destroy?.(); } catch {}
+    try { this.jobBuf?.destroy?.(); } catch {}
+    try { this.stepBuf?.destroy?.(); } catch {}
+    this.ready = false;
   }
 }
 

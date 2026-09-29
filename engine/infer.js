@@ -382,9 +382,11 @@ export class PetitGPT {
     }
     if (this.isGpt2) {
       const wpe = this._w.wpe.data;
+      const maxSeq = this.cfg.maxSeqLen || 1024;
       for (let t = 0; t < ids.length; t++) {
         const dst = t * dModel;
-        const src = (pos0 + t) * dModel;
+        const safePos = Math.min(pos0 + t, maxSeq - 1);
+        const src = safePos * dModel;
         for (let i = 0; i < dModel; i++) out[dst + i] += wpe[src + i];
       }
     }
@@ -599,6 +601,11 @@ export class PetitGPT {
   }
 
   async generate(ids, { maxNewTokens = 64, eosId = SPECIAL.EOS, onToken = null } = {}) {
+    const maxSeq = this.cfg?.maxSeqLen || 2048;
+    const maxPrompt = Math.max(1, maxSeq - maxNewTokens - 1);
+    if (ids.length > maxPrompt) {
+      ids = ids.slice(ids.length - maxPrompt);
+    }
     this.resetCache();
     const t0 = performance.now();
     const logits = this.forwardPrompt(ids);

@@ -90,7 +90,12 @@ export function loadTokenizerFromJson(spec) {
   }
 
   function encode(text) {
-    if (!specialList.length || !text) return encodeRaw(text);
+    if (!text) return [];
+    if (typeof text !== "string") text = String(text);
+    if (text.length > 32768) {
+      text = text.slice(text.length - 32768);
+    }
+    if (!specialList.length) return encodeRaw(text);
     const ids = [];
     let i = 0;
     while (i < text.length) {
@@ -195,10 +200,16 @@ export function encodeChat(tokenizer, messages, { defaultSystem = null } = {}) {
 }
 
 export function encodeMessages(tokenizer, messages, card = {}) {
-  const msgs = messages.map((m) => ({
-    role: String(m.role).trim().toLowerCase(),
-    content: String(m.content),
-  }));
+  const msgs = messages.map((m) => {
+    let content = String(m.content ?? "");
+    if (content.length > 32768) {
+      content = content.slice(content.length - 32768);
+    }
+    return {
+      role: String(m.role).trim().toLowerCase(),
+      content,
+    };
+  });
   const tpl = card.template || "petitgpt";
   if (tpl === "completion") {
     const last = msgs[msgs.length - 1];

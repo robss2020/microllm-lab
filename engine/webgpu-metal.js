@@ -21,7 +21,7 @@ export const FLAG_GELU = 32;
 export const FLAG_F16 = 64;
 export const CHAIN_TOK = 0xffffffff;
 
-const COMPUTE = GPUShaderStage.COMPUTE;
+const COMPUTE = typeof GPUShaderStage !== "undefined" ? GPUShaderStage.COMPUTE : 4;
 
 function consts(cfg) {
   const D = cfg.dModel;
@@ -636,13 +636,25 @@ var<workgroup> red: array<f32, 256>;
 
 fn kv_elems() -> u32 { return NKV * MS * HD; }
 fn k_off(li: u32, h: u32, t: u32, d: u32) -> u32 {
-  return li * kv_elems() + (h * MS + t) * HD + d;
+  let safe_t = min(t, MS - 1u);
+  let safe_h = min(h, NKV - 1u);
+  let safe_li = min(li, NL - 1u);
+  return safe_li * kv_elems() + (safe_h * MS + safe_t) * HD + min(d, HD - 1u);
 }
 fn v_off(li: u32, h: u32, t: u32, d: u32) -> u32 {
-  return NL * kv_elems() + k_off(0u, h, t, d) + li * kv_elems();
+  let safe_t = min(t, MS - 1u);
+  let safe_h = min(h, NKV - 1u);
+  let safe_li = min(li, NL - 1u);
+  return NL * kv_elems() + safe_li * kv_elems() + (safe_h * MS + safe_t) * HD + min(d, HD - 1u);
 }
-fn cos_at(pos: u32, d: u32) -> f32 { return ROPE[pos * RD + d]; }
-fn sin_at(pos: u32, d: u32) -> f32 { return ROPE[MS * RD + pos * RD + d]; }
+fn cos_at(pos: u32, d: u32) -> f32 {
+  let safe_pos = min(pos, MS - 1u);
+  return ROPE[safe_pos * RD + min(d, RD - 1u)];
+}
+fn sin_at(pos: u32, d: u32) -> f32 {
+  let safe_pos = min(pos, MS - 1u);
+  return ROPE[MS * RD + safe_pos * RD + min(d, RD - 1u)];
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
@@ -678,7 +690,7 @@ fn main(@builtin(local_invocation_id) lidv: vec3<u32>) {
   }
   workgroupBarrier();
 
-  let seq = pos + 1u;
+  let seq = min(pos + 1u, MS);
   let scale = inverseSqrt(f32(HD));
   let rep = NH / NKV;
   var sidx = lid;
